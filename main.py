@@ -39,7 +39,7 @@ Examples:
     )
     parser.add_argument(
         "--plan", default="standard", choices=list(CLOUD_QUOTA_LIMITS.keys()),
-        help="Atlassian Cloud plan to analyze against (default: standard)"
+        help="Atlassian Cloud plan to analyze against (default: standard). Use 'enterprise-max' for large Enterprise orgs (500,000 points/hour)."
     )
 
     args = parser.parse_args()

@@ -19,6 +19,7 @@ Based on [Atlassian's rate limiting documentation](https://developer.atlassian.c
 | Standard | 10,000 |
 | Premium | 50,000 |
 | Enterprise | 250,000 |
+| Enterprise (large org) | 500,000 |
 
 ## Installation
 
@@ -35,6 +36,9 @@ python main.py --log /path/to/jira/access.log --product jira
 
 # Analyze against Premium plan limits
 python main.py --log /path/to/jira/access.log --product jira --plan premium
+
+# Analyze against Enterprise max limits (large orgs with 500k points/hour)
+python main.py --log /path/to/jira/access.log --product jira --plan enterprise-max
 
 # Analyze a Confluence access log
 python main.py --log /path/to/confluence/access.log --product confluence

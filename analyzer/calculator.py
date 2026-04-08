@@ -37,6 +37,7 @@ CLOUD_QUOTA_LIMITS = {
     "standard": 10_000,
     "premium": 50_000,
     "enterprise": 250_000,
+    "enterprise-max": 500_000,  # Enterprise with large user counts
 }
 
 # Default plan to warn against (most conservative)
