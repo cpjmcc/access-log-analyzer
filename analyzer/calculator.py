@@ -32,16 +32,52 @@ from .parser import APICall
 
 # ---------------------------------------------------------------------------
 # Cloud quota limits (points per hour) by plan tier
+#
+# Tier 1 – Global Pool (default for most apps):
+#   All tenants share a single 65,000 point/hour quota.
+#
+# Tier 2 – Per-Tenant Pool (high-usage apps after review):
+#   Free:       65,000 points/hour (flat)
+#   Standard:   100,000 + (10 × users) points/hour  — capped at 500,000
+#   Premium:    130,000 + (20 × users) points/hour  — capped at 500,000
+#   Enterprise: 150,000 + (30 × users) points/hour  — capped at 500,000
+#
+# Source: https://developer.atlassian.com/cloud/jira/platform/rate-limiting/
 # ---------------------------------------------------------------------------
+
+# Tier 1 — Global Pool flat limits (used when --users is not specified)
 CLOUD_QUOTA_LIMITS = {
-    "standard": 10_000,
-    "premium": 50_000,
-    "enterprise": 250_000,
-    "enterprise-max": 500_000,  # Enterprise with large user counts
+    "free":           65_000,
+    "standard":       65_000,   # Tier 1 global pool default
+    "premium":        65_000,   # Tier 1 global pool default
+    "enterprise":     65_000,   # Tier 1 global pool default
 }
+
+# Tier 2 — Per-Tenant Pool formula: base + (multiplier × users), capped at 500,000
+TIER2_FORMULA = {
+    "free":       {"base": 65_000,  "per_user": 0},
+    "standard":   {"base": 100_000, "per_user": 10},
+    "premium":    {"base": 130_000, "per_user": 20},
+    "enterprise": {"base": 150_000, "per_user": 30},
+}
+TIER2_CAP = 500_000
 
 # Default plan to warn against (most conservative)
 DEFAULT_PLAN = "standard"
+
+
+def calculate_quota(plan: str, user_count: int = 0) -> int:
+    """
+    Calculate the effective hourly quota based on plan and user count.
+    - If user_count is 0: uses Tier 1 Global Pool flat limit (65,000)
+    - If user_count > 0: uses Tier 2 Per-Tenant Pool formula, capped at 500,000
+    """
+    if user_count <= 0:
+        return CLOUD_QUOTA_LIMITS.get(plan, 65_000)
+
+    formula = TIER2_FORMULA.get(plan, TIER2_FORMULA["standard"])
+    quota = formula["base"] + (formula["per_user"] * user_count)
+    return min(quota, TIER2_CAP)
 
 # ---------------------------------------------------------------------------
 # Burst rate limits (requests per second) — approximate steady-state values
@@ -136,12 +172,17 @@ def enrich_calls(calls: list[APICall]) -> list[APICall]:
     return calls
 
 
-def analyze_hourly_quota(calls: list[APICall], plan: str = DEFAULT_PLAN) -> dict:
+def analyze_hourly_quota(calls: list[APICall], plan: str = DEFAULT_PLAN, user_count: int = 0) -> dict:
     """
     Group calls by hour and calculate total points consumed per hour.
     Returns analysis vs cloud quota limits.
+
+    If user_count > 0, uses Tier 2 Per-Tenant Pool formula.
+    Otherwise uses Tier 1 Global Pool flat limit.
     """
-    limit = CLOUD_QUOTA_LIMITS[plan]
+    limit = calculate_quota(plan, user_count)
+    tier = 2 if user_count > 0 else 1
+
     hourly: DefaultDict[str, int] = defaultdict(int)
     hourly_calls: DefaultDict[str, int] = defaultdict(int)
 
@@ -165,6 +206,8 @@ def analyze_hourly_quota(calls: list[APICall], plan: str = DEFAULT_PLAN) -> dict
 
     return {
         "plan": plan,
+        "user_count": user_count,
+        "tier": tier,
         "limit_per_hour": limit,
         "hourly_breakdown": results,
         "peak_hour": max(results, key=lambda x: x["points"]) if results else None,

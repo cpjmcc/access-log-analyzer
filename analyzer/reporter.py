@@ -28,8 +28,12 @@ def print_section(title: str):
     print(f"\n{Fore.YELLOW}── {title} {'─' * (65 - len(title))}{Style.RESET_ALL}")
 
 
-def generate_report(calls: list[APICall], product: str, plan: str = "standard"):
+def generate_report(calls: list[APICall], product: str, plan: str = "standard", user_count: int = 0):
     """Generate a full rate limit risk report for the given API calls."""
+
+    from .calculator import calculate_quota
+    effective_quota = calculate_quota(plan, user_count)
+    tier = 2 if user_count > 0 else 1
 
     print_header(f"ACCESS LOG ANALYZER — {product.upper()} DC → CLOUD MIGRATION RISK REPORT")
 
@@ -48,6 +52,7 @@ def generate_report(calls: list[APICall], product: str, plan: str = "standard"):
     for c in calls:
         methods[c.method] = methods.get(c.method, 0) + 1
 
+    tier_label = f"Tier 2 Per-Tenant Pool ({user_count:,} users)" if user_count > 0 else "Tier 1 Global Pool"
     print(tabulate([
         ["Total API calls analyzed", f"{len(calls):,}"],
         ["Total points consumed", f"{total_points:,}"],
@@ -56,12 +61,13 @@ def generate_report(calls: list[APICall], product: str, plan: str = "standard"):
         ["Unique endpoints hit", unique_endpoints],
         ["HTTP methods", ", ".join(f"{m}:{n}" for m, n in sorted(methods.items()))],
         ["Cloud plan analyzed against", plan.capitalize()],
-        ["Cloud hourly quota", f"{CLOUD_QUOTA_LIMITS[plan]:,} points/hour"],
+        ["Rate limit tier", tier_label],
+        ["Cloud hourly quota", f"{effective_quota:,} points/hour"],
     ], tablefmt="simple"), "\n")
 
     # ── Hourly Quota Analysis ─────────────────────────────────────────────────
     print_section("1. Points-Based Hourly Quota Analysis")
-    quota_analysis = analyze_hourly_quota(calls, plan)
+    quota_analysis = analyze_hourly_quota(calls, plan, user_count)
 
     if quota_analysis["breach_count"] > 0:
         print(f"{Fore.RED}  ⚠️  WARNING: {quota_analysis['breach_count']} hour(s) would BREACH the cloud quota limit!{Style.RESET_ALL}")

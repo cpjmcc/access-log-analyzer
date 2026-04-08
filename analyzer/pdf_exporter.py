@@ -12,6 +12,8 @@ from reportlab.platypus import (
     SimpleDocTemplate, Table, TableStyle, Paragraph,
     Spacer, HRFlowable, PageBreak
 )
+from reportlab.graphics.shapes import Drawing, Rect, Line, String, Group
+from reportlab.graphics import renderPDF
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from datetime import datetime
 from .parser import APICall
@@ -20,6 +22,7 @@ from .calculator import (
     analyze_burst_rates,
     analyze_per_issue_writes,
     CLOUD_QUOTA_LIMITS,
+    calculate_quota,
 )
 from collections import defaultdict
 
@@ -94,6 +97,97 @@ def base_table_style(header_bg=ATLASSIAN_BLUE):
     ])
 
 
+def build_hourly_chart(hourly_breakdown: list, quota_limit: int, width: float, height: float = 140) -> Drawing:
+    """Build a bar chart of hourly API points usage with a quota limit line."""
+    if not hourly_breakdown:
+        return Drawing(width, height)
+
+    padding_left = 60
+    padding_right = 20
+    padding_top = 20
+    padding_bottom = 40
+    chart_w = width - padding_left - padding_right
+    chart_h = height - padding_top - padding_bottom
+
+    # Calculate scale — always show at least the quota limit on Y axis
+    max_points = max(max(r["points"] for r in hourly_breakdown), quota_limit)
+    y_scale = chart_h / max_points
+
+    drawing = Drawing(width, height)
+
+    # Background
+    drawing.add(Rect(padding_left, padding_bottom, chart_w, chart_h,
+                     fillColor=GREY_LIGHT, strokeColor=GREY_MID, strokeWidth=0.5))
+
+    # Y axis gridlines + labels (5 intervals)
+    intervals = 5
+    for i in range(intervals + 1):
+        y_val = (max_points / intervals) * i
+        y_pos = padding_bottom + (y_val * y_scale)
+        # Gridline
+        drawing.add(Line(padding_left, y_pos, padding_left + chart_w, y_pos,
+                         strokeColor=GREY_MID, strokeWidth=0.5))
+        # Y label
+        label = f"{int(y_val):,}"
+        drawing.add(String(padding_left - 4, y_pos - 3, label,
+                           fontSize=6, fillColor=TEXT_MID, textAnchor="end"))
+
+    # Bars
+    n = len(hourly_breakdown)
+    bar_spacing = chart_w / n
+    bar_width = bar_spacing * 0.6
+
+    for i, row in enumerate(hourly_breakdown):
+        x = padding_left + (i * bar_spacing) + (bar_spacing - bar_width) / 2
+        bar_h = max(row["points"] * y_scale, 1)
+        y = padding_bottom
+
+        # Bar colour based on risk
+        if "BREACH" in row["risk_level"]:
+            bar_color = RED
+        elif "WARNING" in row["risk_level"]:
+            bar_color = YELLOW
+        else:
+            bar_color = colors.HexColor("#0065FF")
+
+        drawing.add(Rect(x, y, bar_width, bar_h,
+                         fillColor=bar_color, strokeColor=None))
+
+        # Points label above bar
+        drawing.add(String(x + bar_width / 2, y + bar_h + 3,
+                           f"{row['points']:,}",
+                           fontSize=6, fillColor=TEXT_DARK, textAnchor="middle"))
+
+        # X axis label (hour)
+        hour_label = row["hour"].split(" ")[1]  # just "HH:00"
+        drawing.add(String(x + bar_width / 2, padding_bottom - 12,
+                           row["hour"].split(" ")[0],
+                           fontSize=5.5, fillColor=TEXT_MID, textAnchor="middle"))
+        drawing.add(String(x + bar_width / 2, padding_bottom - 20,
+                           hour_label,
+                           fontSize=6, fillColor=TEXT_DARK, textAnchor="middle"))
+
+    # Quota limit line (red dashed)
+    limit_y = padding_bottom + (quota_limit * y_scale)
+    if limit_y <= padding_bottom + chart_h:
+        drawing.add(Line(padding_left, limit_y, padding_left + chart_w, limit_y,
+                         strokeColor=RED, strokeWidth=1.5, strokeDashArray=[4, 3]))
+        drawing.add(String(padding_left + chart_w + 2, limit_y - 3,
+                           "Limit", fontSize=6.5, fillColor=RED, textAnchor="start"))
+
+    # Y axis title
+    drawing.add(String(10, padding_bottom + chart_h / 2, "Points Used",
+                       fontSize=7, fillColor=TEXT_MID, textAnchor="middle"))
+
+    # Chart title
+    drawing.add(String(padding_left + chart_w / 2, height - 12,
+                       "Hourly API Points Usage vs Cloud Quota Limit",
+                       fontSize=8, fillColor=TEXT_DARK, textAnchor="middle",
+                       fontName="Helvetica-Bold"))
+
+    return drawing
+
+
 def add_page_number(canvas, doc):
     """Add footer with page number and generation timestamp."""
     canvas.saveState()
@@ -104,7 +198,7 @@ def add_page_number(canvas, doc):
     canvas.restoreState()
 
 
-def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str):
+def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str, user_count: int = 0):
     """Generate a PDF report and save to output_path."""
 
     doc = SimpleDocTemplate(
@@ -118,13 +212,21 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
     story = []
     W = A4[0] - 30*mm  # usable width
 
+    effective_quota = calculate_quota(plan, user_count)
+    tier = 2 if user_count > 0 else 1
+    tier_label = (
+        f"Tier 2 Per-Tenant Pool · {user_count:,} users"
+        if user_count > 0 else "Tier 1 Global Pool"
+    )
+
     # ── Title ─────────────────────────────────────────────────────────────────
     story.append(Paragraph(
         f"{product.capitalize()} DC → Cloud Migration", styles["title"]
     ))
     story.append(Paragraph(
-        f"API Rate Limit Risk Report  ·  Plan: <b>{plan.capitalize()}</b>  "
-        f"({CLOUD_QUOTA_LIMITS[plan]:,} points/hour)  ·  "
+        f"API Rate Limit Risk Report  ·  Plan: <b>{plan.capitalize()}</b>  ·  "
+        f"{tier_label}  ·  "
+        f"Quota: <b>{effective_quota:,} points/hour</b>  ·  "
         f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         styles["subtitle"]
     ))
@@ -149,7 +251,8 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
         ["Unique authenticated users",   str(unique_users)],
         ["HTTP methods",                 method_str],
         ["Cloud plan",                   plan.capitalize()],
-        ["Hourly quota limit",           f"{CLOUD_QUOTA_LIMITS[plan]:,} points/hour"],
+        ["Rate limit tier",              tier_label],
+        ["Hourly quota limit",           f"{effective_quota:,} points/hour"],
     ]
     t = Table(summary_data, colWidths=[W * 0.45, W * 0.55])
     t.setStyle(base_table_style())
@@ -158,7 +261,7 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
 
     # ── 1. Hourly Quota ───────────────────────────────────────────────────────
     story.append(Paragraph("1. Points-Based Hourly Quota Analysis", styles["section"]))
-    quota = analyze_hourly_quota(calls, plan)
+    quota = analyze_hourly_quota(calls, plan, user_count)
 
     if quota["breach_count"] > 0:
         story.append(Paragraph(
@@ -191,6 +294,24 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
     t = Table(quota_rows, colWidths=[W*0.25, W*0.12, W*0.16, W*0.16, W*0.12, W*0.19])
     t.setStyle(quota_style)
     story.append(t)
+    story.append(Spacer(1, 10))
+
+    # ── Hourly chart ──────────────────────────────────────────────────────────
+    chart = build_hourly_chart(quota["hourly_breakdown"], effective_quota, float(W))
+    story.append(chart)
+    story.append(Spacer(1, 4))
+
+    # Legend
+    legend_data = [["🟦 Normal", "🟨 Warning (>75%)", "🟥 Breach", "--- Quota Limit"]]
+    legend_t = Table(legend_data, colWidths=[W*0.25]*4)
+    legend_t.setStyle(TableStyle([
+        ("FONTSIZE",    (0, 0), (-1, -1), 7),
+        ("TEXTCOLOR",   (0, 0), (-1, -1), TEXT_MID),
+        ("ALIGN",       (0, 0), (-1, -1), "CENTER"),
+        ("TOPPADDING",  (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING",(0, 0), (-1, -1), 2),
+    ]))
+    story.append(legend_t)
     story.append(Spacer(1, 8))
 
     # ── 2. Burst Rate ─────────────────────────────────────────────────────────

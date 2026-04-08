@@ -46,11 +46,31 @@ Examples:
         "--output", default=None,
         help="Optional path to save a PDF report (e.g. --output report.pdf)"
     )
+    parser.add_argument(
+        "--users", default=0, type=int,
+        help=(
+            "Number of licensed users in your Atlassian instance. "
+            "When provided, uses the Tier 2 Per-Tenant Pool formula: "
+            "Standard: 100,000 + (10 × users), "
+            "Premium: 130,000 + (20 × users), "
+            "Enterprise: 150,000 + (30 × users), capped at 500,000. "
+            "Without --users, Tier 1 Global Pool (65,000 points/hour) is used."
+        )
+    )
 
     args = parser.parse_args()
 
+    from analyzer.calculator import calculate_quota
+    effective_quota = calculate_quota(args.plan, args.users)
+    tier = 2 if args.users > 0 else 1
+
     print(f"\n🔍 Analyzing {args.product.capitalize()} DC access log: {args.log}")
-    print(f"   Cloud plan: {args.plan.capitalize()} ({CLOUD_QUOTA_LIMITS[args.plan]:,} points/hour)\n")
+    print(f"   Cloud plan:  {args.plan.capitalize()}")
+    if args.users > 0:
+        print(f"   Users:       {args.users:,}  →  Tier 2 Per-Tenant Pool")
+    else:
+        print(f"   Users:       not specified  →  Tier 1 Global Pool")
+    print(f"   Hourly quota: {effective_quota:,} points/hour\n")
 
     try:
         calls = parse_log_file(args.log, args.product)
@@ -63,10 +83,10 @@ Examples:
         sys.exit(0)
 
     calls = enrich_calls(calls)
-    generate_report(calls, args.product, args.plan)
+    generate_report(calls, args.product, args.plan, args.users)
 
     if args.output:
-        generate_pdf(calls, args.product, args.plan, args.output)
+        generate_pdf(calls, args.product, args.plan, args.output, args.users)
 
 
 if __name__ == "__main__":
