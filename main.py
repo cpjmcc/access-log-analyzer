@@ -15,6 +15,7 @@ import sys
 from analyzer.parser import parse_log_file
 from analyzer.calculator import enrich_calls, CLOUD_QUOTA_LIMITS
 from analyzer.reporter import generate_report
+from analyzer.pdf_exporter import generate_pdf
 
 
 def main():
@@ -41,6 +42,10 @@ Examples:
         "--plan", default="standard", choices=list(CLOUD_QUOTA_LIMITS.keys()),
         help="Atlassian Cloud plan to analyze against (default: standard). Use 'enterprise-max' for large Enterprise orgs (500,000 points/hour)."
     )
+    parser.add_argument(
+        "--output", default=None,
+        help="Optional path to save a PDF report (e.g. --output report.pdf)"
+    )
 
     args = parser.parse_args()
 
@@ -59,6 +64,9 @@ Examples:
 
     calls = enrich_calls(calls)
     generate_report(calls, args.product, args.plan)
+
+    if args.output:
+        generate_pdf(calls, args.product, args.plan, args.output)
 
 
 if __name__ == "__main__":
