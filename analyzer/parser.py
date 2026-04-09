@@ -15,19 +15,34 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Optional
 
-# Regex for Combined Log Format used by both Jira and Confluence DC
-LOG_PATTERN = re.compile(
-    r'(?P<ip>\S+)\s+'           # Client IP
-    r'\S+\s+'                    # Ident (usually -)
-    r'(?P<user>\S+)\s+'          # Auth user (or -)
-    r'\[(?P<timestamp>[^\]]+)\]\s+'  # Timestamp
-    r'"(?P<method>\S+)\s+'       # HTTP method
-    r'(?P<path>\S+)\s+'          # Request path
-    r'\S+"\s+'                   # HTTP version
-    r'(?P<status>\d{3})\s+'      # Status code
-    r'(?P<bytes>\S+)'            # Response bytes
-    r'(?:\s+"(?P<referer>[^"]*)"\s+"(?P<user_agent>[^"]*)")?'  # Optional referer + UA
-    r'(?:\s+(?P<duration>\d+))?'  # Optional duration (ms)
+# Regex for Standard Combined Log Format (used by sample/simple DC configs):
+#   IP - user [timestamp] "METHOD path HTTP/x" status bytes "referer" "ua" duration
+LOG_PATTERN_STANDARD = re.compile(
+    r'(?P<ip>\S+)\s+'
+    r'\S+\s+'                                                    # ident (-)
+    r'(?P<user>\S+)\s+'
+    r'\[(?P<timestamp>[^\]]+)\]\s+'
+    r'"(?P<method>\S+)\s+(?P<path>\S+)\s+\S+"\s+'
+    r'(?P<status>\d{3})\s+'
+    r'(?P<bytes>\S+)'
+    r'(?:\s+"(?P<referer>[^"]*)"\s+"(?P<user_agent>[^"]*)")?'
+    r'(?:\s+(?P<duration>\d+))?'
+)
+
+# Regex for Jira DC extended log format:
+#   IP requestId userId [timestamp] "METHOD path HTTP/x" status bytes duration "referer" "ua" "sessionId"
+LOG_PATTERN_JIRA_DC = re.compile(
+    r'(?P<ip>\S+)\s+'
+    r'\S+\s+'                                                    # requestId (0x...)
+    r'(?P<user>\S+)\s+'                                          # userId or -
+    r'\[(?P<timestamp>[^\]]+)\]\s+'
+    r'"(?P<method>\S+)\s+(?P<path>\S+)\s+\S+"\s+'
+    r'(?P<status>\d{3})\s+'
+    r'(?P<bytes>\S+)\s+'
+    r'(?P<duration>\d+)\s+'                                      # duration comes BEFORE referer
+    r'"(?P<referer>[^"]*)"\s+'
+    r'"(?P<user_agent>[^"]*)"'
+    r'(?:\s+"[^"]*")?'                                           # optional session id
 )
 
 # Timestamp format used in DC logs
@@ -100,7 +115,10 @@ def is_external_api_call(path: str, user_agent: str, product: str) -> bool:
 
 def parse_log_line(line: str, product: str) -> Optional[APICall]:
     """Parse a single log line and return an APICall if it's a relevant external API call."""
-    match = LOG_PATTERN.match(line.strip())
+    # Try Jira DC extended format first (more specific), then standard
+    match = LOG_PATTERN_JIRA_DC.match(line.strip())
+    if not match:
+        match = LOG_PATTERN_STANDARD.match(line.strip())
     if not match:
         return None
 
