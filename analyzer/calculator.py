@@ -306,3 +306,46 @@ def analyze_per_issue_writes(calls: list[APICall]) -> dict:
         "per_issue_write_limit": PER_ISSUE_WRITE_LIMIT,
         "risky_issues": risky_issues,
     }
+
+
+# ---------------------------------------------------------------------------
+# Traffic Classification
+# ---------------------------------------------------------------------------
+
+# Service account patterns — usernames that indicate automated/system traffic
+SERVICE_ACCOUNT_PATTERNS = [
+    "svc_", "svc-", "service", "bot", "automation", "admin",
+    "integration", "sync", "api", "system", "daemon", "job",
+    "tasktop", "qtest", "jenkins", "bamboo", "script"
+]
+
+
+def classify_call(call) -> str:
+    """
+    Classify an API call as one of:
+    - 'authenticated_user'  : Real human user (named username, not a service account)
+    - 'service_account'     : Automated service account (named but looks like a service)
+    - 'unauthenticated'     : No username (field is '-'), anonymous or system call
+    """
+    user = call.user.strip()
+    
+    if user == "-" or user == "":
+        return "unauthenticated"
+    
+    user_lower = user.lower()
+    if any(pattern in user_lower for pattern in SERVICE_ACCOUNT_PATTERNS):
+        return "service_account"
+    
+    return "authenticated_user"
+
+
+def split_calls_by_type(calls: list) -> dict:
+    """Split calls into authenticated users, service accounts, and unauthenticated."""
+    result = {
+        "authenticated_user": [],
+        "service_account": [],
+        "unauthenticated": [],
+    }
+    for call in calls:
+        result[classify_call(call)].append(call)
+    return result

@@ -12,6 +12,7 @@ from .calculator import (
     analyze_burst_rates,
     analyze_per_issue_writes,
     CLOUD_QUOTA_LIMITS,
+    split_calls_by_type,
 )
 
 # Initialize colorama for cross-platform color support
@@ -141,19 +142,30 @@ def generate_report(calls: list[APICall], product: str, plan: str = "standard", 
     # ── Top API Consumers ─────────────────────────────────────────────────────
     print_section("4. Top API Consumers (by Points)")
     from collections import defaultdict
-    user_points: dict = defaultdict(int)
-    user_calls: dict = defaultdict(int)
-    for call in calls:
-        key = call.user if call.user != "-" else call.ip
-        user_points[key] += call.points
-        user_calls[key] += 1
+    split = split_calls_by_type(calls)
 
-    top_users = sorted(user_points.items(), key=lambda x: x[1], reverse=True)[:10]
-    rows = [
-        [user, f"{user_calls[user]:,}", f"{pts:,}", f"{round((pts/total_points)*100, 1)}%"]
-        for user, pts in top_users
-    ]
-    print(tabulate(rows, headers=["User / IP", "API Calls", "Points Used", "% of Total"], tablefmt="simple"))
+    def print_consumer_table(call_subset, label):
+        if not call_subset:
+            print(f"  No {label} traffic found.")
+            return
+        pts_map: dict = defaultdict(int)
+        calls_map: dict = defaultdict(int)
+        for c in call_subset:
+            key = c.user if c.user != "-" else c.ip
+            pts_map[key] += c.points
+            calls_map[key] += 1
+        subset_total = sum(pts_map.values())
+        top = sorted(pts_map.items(), key=lambda x: x[1], reverse=True)[:10]
+        rows = [
+            [u, f"{calls_map[u]:,}", f"{p:,}", f"{round((p/total_points)*100, 1)}%"]
+            for u, p in top
+        ]
+        print(f"\n  {label} ({len(call_subset):,} calls, {subset_total:,} points  {round((subset_total/total_points)*100,1)}% of total):")
+        print(tabulate(rows, headers=["User / IP", "API Calls", "Points Used", "% of Total"], tablefmt="simple"))
+
+    print_consumer_table(split["authenticated_user"], "👤 Authenticated Users")
+    print_consumer_table(split["service_account"],    "🤖 Service Accounts")
+    print_consumer_table(split["unauthenticated"],    "❓ Unauthenticated / System")
 
     # ── Recommendations ───────────────────────────────────────────────────────
     print_section("5. Recommendations")

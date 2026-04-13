@@ -23,6 +23,7 @@ from .calculator import (
     analyze_per_issue_writes,
     CLOUD_QUOTA_LIMITS,
     calculate_quota,
+    split_calls_by_type,
 )
 from collections import defaultdict
 
@@ -455,25 +456,46 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
 
     # ── 4. Top Consumers ──────────────────────────────────────────────────────
     story.append(Paragraph("4. Top API Consumers (by Points)", styles["section"]))
+    story.append(Paragraph(
+        "API calls are split into three categories based on the authenticated username in the log: "
+        "<b>Authenticated Users</b> (real human sessions), <b>Service Accounts</b> (automated integrations "
+        "identified by username patterns), and <b>Unauthenticated / System</b> (no username — anonymous "
+        "or load-balancer-proxied calls without a user session).",
+        ParagraphStyle("consumers_desc", fontSize=8.5, textColor=TEXT_MID, fontName="Helvetica",
+                        spaceAfter=8, leading=13)
+    ))
 
-    user_points: dict = defaultdict(int)
-    user_calls: dict = defaultdict(int)
-    for call in calls:
-        key = call.user if call.user != "-" else call.ip
-        user_points[key] += call.points
-        user_calls[key] += 1
+    split = split_calls_by_type(calls)
 
-    top_users = sorted(user_points.items(), key=lambda x: x[1], reverse=True)[:10]
-    consumer_rows = [["User / IP", "API Calls", "Points Used", "% of Total"]]
-    for user, pts in top_users:
-        consumer_rows.append([
-            user, f"{user_calls[user]:,}", f"{pts:,}",
-            f"{round((pts/total_points)*100, 1)}%"
-        ])
+    def consumer_table(call_subset, label, header_bg=ATLASSIAN_BLUE):
+        if not call_subset:
+            return
+        pts_map = defaultdict(int)
+        calls_map = defaultdict(int)
+        for c in call_subset:
+            key = c.user if c.user != "-" else c.ip
+            pts_map[key] += c.points
+            calls_map[key] += 1
+        subset_pts = sum(pts_map.values())
+        subset_pct = round((subset_pts / total_points) * 100, 1) if total_points else 0
+        top = sorted(pts_map.items(), key=lambda x: x[1], reverse=True)[:10]
 
-    t = Table(consumer_rows, colWidths=[W*0.35, W*0.2, W*0.25, W*0.2])
-    t.setStyle(base_table_style())
-    story.append(t)
+        story.append(Paragraph(
+            f"{label} — {len(call_subset):,} calls · {subset_pts:,} points · {subset_pct}% of total",
+            ParagraphStyle("consumer_label", fontSize=9, textColor=TEXT_DARK,
+                            fontName="Helvetica-Bold", spaceBefore=8, spaceAfter=4)
+        ))
+        rows = [["User / IP", "API Calls", "Points Used", "% of Total"]]
+        for user, pts in top:
+            rows.append([user, f"{calls_map[user]:,}", f"{pts:,}",
+                         f"{round((pts/total_points)*100, 1)}%"])
+        t = Table(rows, colWidths=[W*0.38, W*0.18, W*0.24, W*0.2])
+        t.setStyle(base_table_style(header_bg=header_bg))
+        story.append(t)
+
+    consumer_table(split["authenticated_user"], "👤 Authenticated Users",     ATLASSIAN_BLUE)
+    consumer_table(split["service_account"],    "🤖 Service Accounts",        colors.HexColor("#403294"))
+    consumer_table(split["unauthenticated"],    "❓ Unauthenticated / System", colors.HexColor("#42526E"))
     story.append(Spacer(1, 8))
 
     # ── 5. Recommendations ────────────────────────────────────────────────────
