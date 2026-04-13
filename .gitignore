@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 Wireframe.png
 Wireframe.pn
+build/
+dist/
+*.spec
