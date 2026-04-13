@@ -23,12 +23,24 @@ Based on [Atlassian's rate limiting documentation](https://developer.atlassian.c
 
 ## Installation
 
+> **Note:** Requires Python 3.11+ (Homebrew). The system Python 3.9 on macOS does not support the GUI.
+
 ```bash
+# Install Python 3.11 and tkinter if needed
+brew install python@3.11 python-tk@3.11 poppler
+
 cd access-log-analyzer
-pip install -r requirements.txt
+/opt/homebrew/bin/python3.11 -m pip install -r requirements.txt
 ```
 
 ## Usage
+
+### GUI App (Recommended)
+```bash
+/opt/homebrew/bin/python3.11 app.py
+```
+
+### CLI
 
 ```bash
 # Analyze a Jira access log against Standard plan limits
