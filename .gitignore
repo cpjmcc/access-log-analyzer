@@ -1,2 +1,6 @@
 jira-rate-limit-report.pdf
 Access-Log-Analyzer-User-Guide.pdf
+__pycache__/
+*.pyc
+Wireframe.png
+Wireframe.pn
