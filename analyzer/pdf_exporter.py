@@ -105,7 +105,7 @@ def _round_up_y_max(max_val: int) -> int:
     return int((buffered // magnitude + 1) * magnitude)
 
 
-def build_hourly_chart(hourly_breakdown: list, quota_limit: int, width: float, height: float = 160) -> Drawing:
+def build_hourly_chart(hourly_breakdown: list, quota_limit: int, width: float, height: float = 160, date_label: str = "") -> Drawing:
     """Build a bar chart of hourly API points usage with a quota limit line."""
     if not hourly_breakdown:
         return Drawing(width, height)
@@ -167,14 +167,11 @@ def build_hourly_chart(hourly_breakdown: list, quota_limit: int, width: float, h
                            f"{row['points']:,}",
                            fontSize=6, fillColor=TEXT_DARK, textAnchor="middle"))
 
-        # X axis label (hour)
+        # X axis label — hour only
         hour_label = row["hour"].split(" ")[1]  # just "HH:00"
-        drawing.add(String(x + bar_width / 2, padding_bottom - 12,
-                           row["hour"].split(" ")[0],
-                           fontSize=5.5, fillColor=TEXT_MID, textAnchor="middle"))
-        drawing.add(String(x + bar_width / 2, padding_bottom - 20,
+        drawing.add(String(x + bar_width / 2, padding_bottom - 14,
                            hour_label,
-                           fontSize=6, fillColor=TEXT_DARK, textAnchor="middle"))
+                           fontSize=6.5, fillColor=TEXT_DARK, textAnchor="middle"))
 
     # Quota limit line (red dashed) — always visible since y_max > quota_limit
     limit_y = padding_bottom + (quota_limit * y_scale)
@@ -187,9 +184,12 @@ def build_hourly_chart(hourly_breakdown: list, quota_limit: int, width: float, h
     drawing.add(String(10, padding_bottom + chart_h / 2, "Points Used",
                        fontSize=7, fillColor=TEXT_MID, textAnchor="middle"))
 
-    # Chart title
+    # Chart title — include date range if available
+    title = f"Hourly API Points Usage vs Cloud Quota Limit"
+    if date_label:
+        title += f"  ({date_label})"
     drawing.add(String(padding_left + chart_w / 2, height - 12,
-                       "Hourly API Points Usage vs Cloud Quota Limit",
+                       title,
                        fontSize=8, fillColor=TEXT_DARK, textAnchor="middle",
                        fontName="Helvetica-Bold"))
 
@@ -308,7 +308,13 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
     story.append(Spacer(1, 10))
 
     # ── Hourly chart ──────────────────────────────────────────────────────────
-    chart = build_hourly_chart(quota["hourly_breakdown"], effective_quota, float(W))
+    # Extract date range from hourly breakdown for chart title
+    if quota["hourly_breakdown"]:
+        dates = sorted(set(r["hour"].split(" ")[0] for r in quota["hourly_breakdown"]))
+        date_label = dates[0] if len(dates) == 1 else f"{dates[0]} to {dates[-1]}"
+    else:
+        date_label = ""
+    chart = build_hourly_chart(quota["hourly_breakdown"], effective_quota, float(W), date_label=date_label)
     story.append(chart)
     story.append(Spacer(1, 4))
 
