@@ -7,3 +7,5 @@ Wireframe.pn
 build/
 dist/
 *.spec
+AppIcon.iconset/
+app-logo-1024.png
