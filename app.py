@@ -170,6 +170,7 @@ class AccessLogAnalyzerApp(tk.Tk):
         self.pdf_output_path = tk.StringVar(value="No output path selected")
         self.user_count_var = tk.StringVar(value="")
         self.excluded_ips_var = tk.StringVar(value="")
+        self.exclude_system_var = tk.BooleanVar(value=True)  # Exclude system calls by default
         self._pdf_images = []  # Keep references to avoid GC
 
         self._build_ui()
@@ -219,7 +220,7 @@ class AccessLogAnalyzerApp(tk.Tk):
 
         # User count
         user_frame = tk.Frame(self._prod_card, bg=CARD_BG)
-        user_frame.pack(fill="x", padx=16, pady=(4, 12))
+        user_frame.pack(fill="x", padx=16, pady=(4, 8))
         make_label(user_frame, "User Count:", color=TEXT_MID, size=9).pack(side="left", padx=(0, 8))
         vcmd = (self.register(self._validate_int), "%P")
         self._user_entry = tk.Entry(
@@ -232,6 +233,23 @@ class AccessLogAnalyzerApp(tk.Tk):
         )
         self._user_entry.pack(side="left")
         make_label(user_frame, "  (optional — enables Tier 2 per-tenant quota)", color=TEXT_LIGHT, size=8).pack(side="left")
+
+        # System calls toggle
+        toggle_frame = tk.Frame(self._prod_card, bg=CARD_BG)
+        toggle_frame.pack(fill="x", padx=16, pady=(0, 12))
+        self._system_toggle = tk.Checkbutton(
+            toggle_frame,
+            text="Exclude unauthenticated / system API calls from analysis",
+            variable=self.exclude_system_var,
+            command=self._on_toggle_system_calls,
+            bg=CARD_BG, fg=TEXT_DARK,
+            activebackground=CARD_BG, activeforeground=TEXT_DARK,
+            selectcolor=BLUE_LIGHT,
+            font=("Helvetica", 9),
+            cursor="hand2",
+        )
+        self._system_toggle.pack(side="left")
+        make_label(toggle_frame, "  (system calls to itself won't hit Cloud rate limits)", color=TEXT_LIGHT, size=8).pack(side="left")
 
         # ── PDF Output Card ────────────────────────────────────────────────────
         pdf_card = self._make_card(main, "📄  PDF Output")
@@ -318,6 +336,14 @@ class AccessLogAnalyzerApp(tk.Tk):
         row.pack(fill="x", pady=4)
         self.product_rows.append(row)
 
+    # ── Toggle Handler ────────────────────────────────────────────────────────
+
+    def _on_toggle_system_calls(self):
+        """Re-run analysis automatically when the system calls toggle changes, if a PDF exists."""
+        pdf_path = self.pdf_output_path.get()
+        if pdf_path and pdf_path != "No output path selected" and os.path.exists(pdf_path):
+            self._run()
+
     # ── Validation ────────────────────────────────────────────────────────────
 
     def _validate_int(self, value):
@@ -366,6 +392,9 @@ class AccessLogAnalyzerApp(tk.Tk):
         # Get product configs
         prod_configs = [row.get_values() for row in self.product_rows]
 
+        # Get system call toggle state
+        exclude_system = self.exclude_system_var.get()
+
         # Disable run button and show status
         self._run_btn.configure(state="disabled", text="⏳  Running...")
         self._status_label.configure(text="Analyzing logs...", fg=TEXT_MID)
@@ -374,12 +403,12 @@ class AccessLogAnalyzerApp(tk.Tk):
         # Run in background thread
         thread = threading.Thread(
             target=self._run_analysis,
-            args=(log_paths, prod_configs, user_count, pdf_path, excluded_ips),
+            args=(log_paths, prod_configs, user_count, pdf_path, excluded_ips, exclude_system),
             daemon=True
         )
         thread.start()
 
-    def _run_analysis(self, log_paths, prod_configs, user_count, pdf_path, excluded_ips=None):
+    def _run_analysis(self, log_paths, prod_configs, user_count, pdf_path, excluded_ips=None, exclude_system=True):
         try:
             all_calls = []
 
@@ -405,7 +434,8 @@ class AccessLogAnalyzerApp(tk.Tk):
             plan = prod_configs[0]["edition"] if prod_configs else "standard"
 
             # Generate PDF
-            generate_pdf(all_calls, prod_configs[0]["product"], plan, pdf_path, user_count, excluded_ips=excluded_ips or [])
+            generate_pdf(all_calls, prod_configs[0]["product"], plan, pdf_path, user_count,
+                         excluded_ips=excluded_ips or [], exclude_system=exclude_system)
 
             # Update UI on main thread
             self.after(0, lambda: self._on_success(pdf_path, len(all_calls)))
@@ -464,7 +494,13 @@ class AccessLogAnalyzerApp(tk.Tk):
             self._canvas.configure(scrollregion=(0, 0, canvas_width, y_offset))
 
         except Exception as e:
-            self._status_label.configure(text=f"⚠️  PDF preview error: {e}", fg=YELLOW)
+            err = str(e).lower()
+            is_poppler = any(k in err for k in ("poppler", "pdftoppm", "pdfinfo", "no such file", "not found", "filenotfounderror"))
+            if is_poppler:
+                msg = f"⚠️  PDF preview unavailable — your report was saved successfully. Open it from: {pdf_path}"
+            else:
+                msg = f"⚠️  PDF preview error: {e}"
+            self._status_label.configure(text=msg, fg=YELLOW)
 
 
 # ── Entry Point ───────────────────────────────────────────────────────────────

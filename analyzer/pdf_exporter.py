@@ -207,8 +207,15 @@ def add_page_number(canvas, doc):
     canvas.restoreState()
 
 
-def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str, user_count: int = 0, excluded_ips: list = None):
+def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str, user_count: int = 0, excluded_ips: list = None, exclude_system: bool = True):
     """Generate a PDF report and save to output_path."""
+
+    # Filter out unauthenticated/system calls if requested
+    split_all = split_calls_by_type(calls)
+    if exclude_system:
+        analysis_calls = split_all["authenticated_user"] + split_all["service_account"]
+    else:
+        analysis_calls = calls
 
     doc = SimpleDocTemplate(
         output_path,
@@ -229,6 +236,8 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
     )
 
     # ── Title ─────────────────────────────────────────────────────────────────
+    system_mode_label = "Excluding System / Unauthenticated Calls" if exclude_system else "Including All Calls (incl. System / Unauthenticated)"
+
     story.append(Paragraph(
         f"{product.capitalize()} DC → Cloud Migration", styles["title"]
     ))
@@ -239,7 +248,7 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
     ))
     story.append(Spacer(1, 4))
     story.append(Paragraph(
-        f"Plan: <b>{plan.capitalize()}</b>  ·  {tier_label}  ·  Quota: <b>{effective_quota:,} points/hour</b>  ·  Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"Plan: <b>{plan.capitalize()}</b>  ·  {tier_label}  ·  Quota: <b>{effective_quota:,} points/hour</b>  ·  {system_mode_label}  ·  Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         ParagraphStyle("meta", fontSize=8, textColor=TEXT_MID, fontName="Helvetica", spaceAfter=10)
     ))
     story.append(HRFlowable(width="100%", thickness=1.5, color=ATLASSIAN_BLUE, spaceAfter=14))
@@ -247,17 +256,18 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
     # ── Summary table ─────────────────────────────────────────────────────────
     story.append(Paragraph("Summary", styles["section"]))
 
-    total_points = sum(c.points for c in calls)
-    unique_ips = len(set(c.ip for c in calls))
-    unique_users = len(set(c.user for c in calls if c.user != "-"))
+    total_points = sum(c.points for c in analysis_calls)
+    unique_ips = len(set(c.ip for c in analysis_calls))
+    unique_users = len(set(c.user for c in analysis_calls if c.user != "-"))
     methods = defaultdict(int)
-    for c in calls:
+    for c in analysis_calls:
         methods[c.method] += 1
     method_str = "  ".join(f"{m}: {n}" for m, n in sorted(methods.items()))
 
+    system_call_count = len(calls) - len(analysis_calls)
     summary_data = [
         ["Metric", "Value"],
-        ["Total API calls analyzed",    f"{len(calls):,}"],
+        ["Total API calls analyzed",    f"{len(analysis_calls):,}"],
         ["Total points consumed",        f"{total_points:,}"],
         ["Unique client IPs",            str(unique_ips)],
         ["Unique authenticated users",   str(unique_users)],
@@ -265,6 +275,7 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
         ["Cloud plan",                   plan.capitalize()],
         ["Rate limit tier",              tier_label],
         ["Hourly quota limit",           f"{effective_quota:,} points/hour"],
+        ["System / unauthenticated calls", f"{system_call_count:,} {'(excluded from analysis)' if exclude_system else '(included in analysis)'}"],
     ]
     if excluded_ips:
         summary_data.append(["System IPs excluded", ", ".join(excluded_ips)])
@@ -275,10 +286,10 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
 
     # ── Load Balancer / Single IP Warning ────────────────────────────────────
     from collections import Counter as _Counter
-    ip_counts = _Counter(c.ip for c in calls)
+    ip_counts = _Counter(c.ip for c in analysis_calls)
     if ip_counts:
         top_ip, top_count = ip_counts.most_common(1)[0]
-        top_pct = (top_count / len(calls)) * 100
+        top_pct = (top_count / len(analysis_calls)) * 100
         if top_pct > 90:
             warn_style = ParagraphStyle("lb_warn", fontSize=9, textColor=YELLOW,
                                          fontName="Helvetica-Bold", spaceAfter=4,
@@ -302,7 +313,7 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
 
     # ── 1. Hourly Quota ───────────────────────────────────────────────────────
     story.append(Paragraph("1. Points-Based Hourly Quota Analysis", styles["section"]))
-    quota = analyze_hourly_quota(calls, plan, user_count)
+    quota = analyze_hourly_quota(analysis_calls, plan, user_count)
 
     if quota["breach_count"] > 0:
         story.append(Paragraph(
@@ -383,7 +394,7 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
         body_style
     ))
 
-    burst = analyze_burst_rates(calls)
+    burst = analyze_burst_rates(analysis_calls)
 
     high = [e for e in burst["endpoints"] if "HIGH" in e["risk_level"]]
     medium = [e for e in burst["endpoints"] if "MEDIUM" in e["risk_level"]]
@@ -412,7 +423,7 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
 
     # ── 3. Per-Issue Writes ───────────────────────────────────────────────────
     story.append(Paragraph("3. Per-Issue Write Limit Analysis", styles["section"]))
-    writes = analyze_per_issue_writes(calls)
+    writes = analyze_per_issue_writes(analysis_calls)
 
     story.append(Paragraph(
         "Jira Cloud enforces a <b>per-issue write limit</b> that restricts how frequently a single issue "
@@ -465,7 +476,7 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
                         spaceAfter=8, leading=13)
     ))
 
-    split = split_calls_by_type(calls)
+    split = split_calls_by_type(analysis_calls)
 
     def consumer_table(call_subset, label, header_bg=ATLASSIAN_BLUE):
         if not call_subset:
@@ -635,6 +646,11 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
          "All traffic from a single IP is grouped together regardless of which app made the call."),
         ("Burst rate analysis uses per-second granularity from log timestamps",
          "Sub-second bursts within the same logged second are not detectable."),
+        ("If traffic passes through a load balancer, per-client IP analysis may be inaccurate",
+         "Configure your load balancer to forward the X-Forwarded-For header "
+         "(e.g. 'proxy_set_header X-Forwarded-For $remote_addr;' in nginx, or equivalent in HAProxy/F5/AWS ALB). "
+         "This preserves the original client IP in the access log, enabling accurate per-client breakdowns "
+         "and avoiding the single-IP load balancer warning in this report."),
         ("Cloud rate limits may change over time",
          "Always verify current limits at developer.atlassian.com/cloud/jira/platform/rate-limiting/"),
     ]
