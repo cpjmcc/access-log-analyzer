@@ -562,35 +562,30 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
 
     story.append(Paragraph("Disclaimer & Limitations", heading_style))
 
-    disc_data = [
-        ["Limitation", "Impact"],
-        ["Object counts are estimated from response bytes, not actual API response data",
-         "Point costs may be over or underestimated by 20–50% depending on data density"],
-        ["Logs may not capture all API traffic (e.g. internal node-to-node calls)",
-         "Actual Cloud usage may differ slightly from what is shown here"],
-        ["DC access logs do not include OAuth app identity",
-         "All traffic from a single IP is grouped together regardless of which app made the call"],
-        ["Burst rate analysis uses per-second granularity from log timestamps",
-         "Sub-second bursts within the same logged second are not detectable"],
-        ["Cloud rate limits may change over time",
-         "Always verify current limits at developer.atlassian.com/cloud/jira/platform/rate-limiting/"],
+    bullet_style = ParagraphStyle("bullet", fontSize=8.5, textColor=TEXT_DARK,
+                                   fontName="Helvetica-Bold", spaceAfter=2, leading=13,
+                                   leftIndent=12, bulletIndent=0)
+    sub_bullet_style = ParagraphStyle("sub_bullet", fontSize=8, textColor=TEXT_MID,
+                                       fontName="Helvetica", spaceAfter=6, leading=12,
+                                       leftIndent=28, bulletIndent=16)
+
+    disclaimers = [
+        ("Object counts are estimated from response bytes, not actual API response data",
+         "Point costs may be over or underestimated by 20–50% depending on data density."),
+        ("Logs may not capture all API traffic (e.g. internal node-to-node calls)",
+         "Actual Cloud usage may differ slightly from what is shown here."),
+        ("DC access logs do not include OAuth app identity",
+         "All traffic from a single IP is grouped together regardless of which app made the call."),
+        ("Burst rate analysis uses per-second granularity from log timestamps",
+         "Sub-second bursts within the same logged second are not detectable."),
+        ("Cloud rate limits may change over time",
+         "Always verify current limits at developer.atlassian.com/cloud/jira/platform/rate-limiting/"),
     ]
-    dt = Table(disc_data, colWidths=[W*0.48, W*0.52])
-    dt.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, 0), colors.HexColor("#42526E")),
-        ("TEXTCOLOR",     (0, 0), (-1, 0), colors.white),
-        ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE",      (0, 0), (-1, -1), 8),
-        ("FONTNAME",      (0, 1), (-1, -1), "Helvetica"),
-        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.white, GREY_LIGHT]),
-        ("GRID",          (0, 0), (-1, -1), 0.4, GREY_MID),
-        ("TOPPADDING",    (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
-        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
-    ]))
-    story.append(dt)
+
+    for limitation, impact in disclaimers:
+        story.append(Paragraph(f"• {limitation}", bullet_style))
+        story.append(Paragraph(f"◦ Impact: {impact}", sub_bullet_style))
+
     story.append(Spacer(1, 10))
     story.append(Paragraph(
         "This report is intended as a planning tool to help administrators understand migration risk. "
