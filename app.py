@@ -96,7 +96,7 @@ class LogFileRow(tk.Frame):
     def _browse(self):
         path = filedialog.askopenfilename(
             title="Select access log file",
-            filetypes=[("Log files", "*.log *.txt *"), ("All files", "*.*")]
+            filetypes=[("All files", "*.*"), ("Log files", "*.log *.txt")]
         )
         if path:
             self.path_var.set(path)

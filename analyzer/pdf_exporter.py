@@ -97,21 +97,30 @@ def base_table_style(header_bg=ATLASSIAN_BLUE):
     ])
 
 
-def build_hourly_chart(hourly_breakdown: list, quota_limit: int, width: float, height: float = 140) -> Drawing:
+def _round_up_y_max(max_val: int) -> int:
+    """Round up to a clean Y-axis maximum with a 10% buffer."""
+    buffered = max_val * 1.1  # 10% buffer above max
+    # Round up to nearest clean number based on magnitude
+    magnitude = 10 ** (len(str(int(buffered))) - 2)
+    return int((buffered // magnitude + 1) * magnitude)
+
+
+def build_hourly_chart(hourly_breakdown: list, quota_limit: int, width: float, height: float = 160) -> Drawing:
     """Build a bar chart of hourly API points usage with a quota limit line."""
     if not hourly_breakdown:
         return Drawing(width, height)
 
-    padding_left = 60
-    padding_right = 20
-    padding_top = 20
-    padding_bottom = 40
+    padding_left = 72
+    padding_right = 40
+    padding_top = 24
+    padding_bottom = 44
     chart_w = width - padding_left - padding_right
     chart_h = height - padding_top - padding_bottom
 
-    # Calculate scale — always show at least the quota limit on Y axis
-    max_points = max(max(r["points"] for r in hourly_breakdown), quota_limit)
-    y_scale = chart_h / max_points
+    # Calculate Y axis max — buffer above both max points AND quota limit
+    data_max = max(r["points"] for r in hourly_breakdown)
+    y_max = _round_up_y_max(max(data_max, quota_limit))
+    y_scale = chart_h / y_max
 
     drawing = Drawing(width, height)
 
@@ -122,7 +131,7 @@ def build_hourly_chart(hourly_breakdown: list, quota_limit: int, width: float, h
     # Y axis gridlines + labels (5 intervals)
     intervals = 5
     for i in range(intervals + 1):
-        y_val = (max_points / intervals) * i
+        y_val = (y_max / intervals) * i
         y_pos = padding_bottom + (y_val * y_scale)
         # Gridline
         drawing.add(Line(padding_left, y_pos, padding_left + chart_w, y_pos,
@@ -167,13 +176,12 @@ def build_hourly_chart(hourly_breakdown: list, quota_limit: int, width: float, h
                            hour_label,
                            fontSize=6, fillColor=TEXT_DARK, textAnchor="middle"))
 
-    # Quota limit line (red dashed)
+    # Quota limit line (red dashed) — always visible since y_max > quota_limit
     limit_y = padding_bottom + (quota_limit * y_scale)
-    if limit_y <= padding_bottom + chart_h:
-        drawing.add(Line(padding_left, limit_y, padding_left + chart_w, limit_y,
-                         strokeColor=RED, strokeWidth=1.5, strokeDashArray=[4, 3]))
-        drawing.add(String(padding_left + chart_w + 2, limit_y - 3,
-                           "Limit", fontSize=6.5, fillColor=RED, textAnchor="start"))
+    drawing.add(Line(padding_left, limit_y, padding_left + chart_w, limit_y,
+                     strokeColor=RED, strokeWidth=1.5, strokeDashArray=[4, 3]))
+    drawing.add(String(padding_left + chart_w + 4, limit_y - 3,
+                       f"Limit\n{quota_limit:,}", fontSize=6, fillColor=RED, textAnchor="start"))
 
     # Y axis title
     drawing.add(String(10, padding_bottom + chart_h / 2, "Points Used",
@@ -223,14 +231,17 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
     story.append(Paragraph(
         f"{product.capitalize()} DC → Cloud Migration", styles["title"]
     ))
+    story.append(Spacer(1, 4))
     story.append(Paragraph(
-        f"API Rate Limit Risk Report  ·  Plan: <b>{plan.capitalize()}</b>  ·  "
-        f"{tier_label}  ·  "
-        f"Quota: <b>{effective_quota:,} points/hour</b>  ·  "
-        f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"API Rate Limit Risk Report",
         styles["subtitle"]
     ))
-    story.append(HRFlowable(width="100%", thickness=1.5, color=ATLASSIAN_BLUE, spaceAfter=10))
+    story.append(Spacer(1, 4))
+    story.append(Paragraph(
+        f"Plan: <b>{plan.capitalize()}</b>  ·  {tier_label}  ·  Quota: <b>{effective_quota:,} points/hour</b>  ·  Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        ParagraphStyle("meta", fontSize=8, textColor=TEXT_MID, fontName="Helvetica", spaceAfter=10)
+    ))
+    story.append(HRFlowable(width="100%", thickness=1.5, color=ATLASSIAN_BLUE, spaceAfter=14))
 
     # ── Summary table ─────────────────────────────────────────────────────────
     story.append(Paragraph("Summary", styles["section"]))
@@ -316,6 +327,26 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
 
     # ── 2. Burst Rate ─────────────────────────────────────────────────────────
     story.append(Paragraph("2. Burst Rate Limit Analysis (Requests/Second per Endpoint)", styles["section"]))
+
+    body_style = ParagraphStyle("body2", fontSize=8.5, textColor=TEXT_MID, fontName="Helvetica",
+                                 spaceAfter=6, leading=13)
+    story.append(Paragraph(
+        "Jira Cloud enforces burst rate limits that control how many requests a single tenant can send "
+        "<b>per second</b> to a given REST API endpoint. This is separate from the hourly points quota and "
+        "uses a <b>token bucket algorithm</b>: each endpoint has a burst buffer (bucket size) that allows "
+        "temporary spikes, and a steady-state refill rate that represents the sustained throughput your "
+        "integration should be designed around.",
+        body_style
+    ))
+    story.append(Paragraph(
+        "Key parameters: <b>Steady-state limit: 10 requests/second</b> per endpoint (design target). "
+        "<b>Burst buffer: 100 tokens</b> per endpoint (allows short spikes above steady-state). "
+        "Even if your hourly points quota is not exceeded, sending too many requests per second to a "
+        "specific endpoint will return <b>HTTP 429</b> for that endpoint until tokens refill. "
+        "Endpoints are independent — hitting the limit on one does not affect others.",
+        body_style
+    ))
+
     burst = analyze_burst_rates(calls)
 
     high = [e for e in burst["endpoints"] if "HIGH" in e["risk_level"]]
@@ -346,6 +377,22 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
     # ── 3. Per-Issue Writes ───────────────────────────────────────────────────
     story.append(Paragraph("3. Per-Issue Write Limit Analysis", styles["section"]))
     writes = analyze_per_issue_writes(calls)
+
+    story.append(Paragraph(
+        "Jira Cloud enforces a <b>per-issue write limit</b> that restricts how frequently a single issue "
+        "can be modified. This limit is independent of the hourly points quota and burst rate limits — "
+        "it specifically targets write operations (POST, PUT, PATCH, DELETE) on individual issues.",
+        body_style
+    ))
+    story.append(Paragraph(
+        "This limit exists to prevent excessive updates to individual resources, which can degrade "
+        "performance for other users accessing the same issue. Common causes include automated status sync "
+        "scripts, webhook-triggered update loops, and bulk update scripts that repeatedly process the same "
+        "issue. When exceeded, Jira returns <b>HTTP 429</b> with header "
+        "<b>RateLimit-Reason: jira-per-issue-on-write</b>. "
+        "Cloud limit: <b>" + str(10) + " write operations per issue per minute.</b>",
+        body_style
+    ))
 
     if writes["risky_issues"]:
         story.append(Paragraph(
