@@ -427,7 +427,7 @@ class AccessLogAnalyzerApp(tk.Tk):
             canvas_width = self._canvas.winfo_width() or 860
 
             # Convert PDF pages to images using pdf2image + poppler
-            pages = convert_from_path(pdf_path, dpi=150)
+            pages = convert_from_path(pdf_path, dpi=150, poppler_path='/opt/homebrew/bin')
             y_offset = 10
 
             for img in pages:
