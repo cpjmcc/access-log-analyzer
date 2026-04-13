@@ -23,41 +23,71 @@ Based on [Atlassian's rate limiting documentation](https://developer.atlassian.c
 
 ## Installation
 
-> **Note:** Requires Python 3.11+ (Homebrew). The system Python 3.9 on macOS does not support the GUI.
+> **Note:** Requires Python 3.11. This project is currently constrained to `<3.14` because `pymupdf==1.23.8` did not build cleanly under Python 3.14 in this environment.
 
 ```bash
-# Install Python 3.11 and tkinter if needed
-brew install python@3.11 python-tk@3.11 poppler
+# Install uv, Python 3.11, tkinter, and poppler if needed
+brew install uv python@3.11 python-tk@3.11 poppler
 
 cd access-log-analyzer
-/opt/homebrew/bin/python3.11 -m pip install -r requirements.txt
+uv python install 3.11
+uv sync --python 3.11 --group dev
+```
+
+This creates a local `.venv`, installs runtime dependencies from `pyproject.toml`, and includes the development tools.
+
+## Development Commands
+
+```bash
+# Lint
+uv run ruff check .
+
+# Type check
+uv run ty check .
+
+# Refresh lockfile after dependency changes
+uv lock --python 3.11
 ```
 
 ## Usage
 
 ### GUI App (Recommended)
 ```bash
-/opt/homebrew/bin/python3.11 app.py
+uv run access-log-analyzer-gui
 ```
 
 ### CLI
 
 ```bash
 # Analyze a Jira access log against Standard plan limits
-python main.py --log /path/to/jira/access.log --product jira
+uv run access-log-analyzer --log /path/to/jira/access.log --product jira
 
 # Analyze against Premium plan limits
-python main.py --log /path/to/jira/access.log --product jira --plan premium
+uv run access-log-analyzer --log /path/to/jira/access.log --product jira --plan premium
 
 # Analyze against Enterprise max limits (large orgs with 500k points/hour)
-python main.py --log /path/to/jira/access.log --product jira --plan enterprise-max
+uv run access-log-analyzer --log /path/to/jira/access.log --product jira --plan enterprise-max
 
 # Analyze a Confluence access log
-python main.py --log /path/to/confluence/access.log --product confluence
+uv run access-log-analyzer --log /path/to/confluence/access.log --product confluence
 
 # Try with the included sample log
-python main.py --log sample_logs/jira-access.log --product jira
+uv run access-log-analyzer --log sample_logs/jira-access.log --product jira
 ```
+
+If you prefer, these equivalent direct commands also work:
+
+```bash
+uv run python app.py
+uv run python main.py --log sample_logs/jira-access.log --product jira
+```
+
+## Dependency Files
+
+- `pyproject.toml` is the source of truth for project metadata, runtime dependencies, dev dependencies, and tool config.
+- `uv.lock` locks exact dependency versions for reproducible installs.
+- `.python-version` pins the repository to Python 3.11 for uv.
+- `requirements.txt` is kept for compatibility, but uv is now the default workflow.
 
 ## Where to Find Your DC Access Logs
 
