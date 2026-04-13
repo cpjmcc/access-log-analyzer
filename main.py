@@ -47,6 +47,10 @@ Examples:
         help="Optional path to save a PDF report (e.g. --output report.pdf)"
     )
     parser.add_argument(
+        "--exclude-ips", default="", dest="exclude_ips",
+        help="Comma-separated list of IP addresses to exclude (e.g. the Jira/Confluence server's own IP). Example: --exclude-ips 10.15.7.100,10.15.7.101"
+    )
+    parser.add_argument(
         "--users", default=0, type=int,
         help=(
             "Number of licensed users in your Atlassian instance. "
@@ -72,8 +76,12 @@ Examples:
         print(f"   Users:       not specified  →  Tier 1 Global Pool")
     print(f"   Hourly quota: {effective_quota:,} points/hour\n")
 
+    excluded_ips = [ip.strip() for ip in args.exclude_ips.split(",") if ip.strip()]
+    if excluded_ips:
+        print(f"   Excluding IPs: {', '.join(excluded_ips)}")
+
     try:
-        calls = parse_log_file(args.log, args.product)
+        calls = parse_log_file(args.log, args.product, excluded_ips=excluded_ips)
     except FileNotFoundError as e:
         print(f"\n❌ Error: {e}\n")
         sys.exit(1)
@@ -83,10 +91,10 @@ Examples:
         sys.exit(0)
 
     calls = enrich_calls(calls)
-    generate_report(calls, args.product, args.plan, args.users)
+    generate_report(calls, args.product, args.plan, args.users, excluded_ips=excluded_ips)
 
     if args.output:
-        generate_pdf(calls, args.product, args.plan, args.output, args.users)
+        generate_pdf(calls, args.product, args.plan, args.output, args.users, excluded_ips=excluded_ips)
 
 
 if __name__ == "__main__":

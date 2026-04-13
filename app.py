@@ -169,6 +169,7 @@ class AccessLogAnalyzerApp(tk.Tk):
         self.product_rows: list[ProductRow] = []
         self.pdf_output_path = tk.StringVar(value="No output path selected")
         self.user_count_var = tk.StringVar(value="")
+        self.excluded_ips_var = tk.StringVar(value="")
         self._pdf_images = []  # Keep references to avoid GC
 
         self._build_ui()
@@ -322,6 +323,10 @@ class AccessLogAnalyzerApp(tk.Tk):
     def _validate_int(self, value):
         return value == "" or value.isdigit()
 
+    def _validate_ips(self, value):
+        """Allow digits, dots, commas and spaces only (for IP entry)."""
+        return all(c in "0123456789., " for c in value)
+
     # ── File Browsing ─────────────────────────────────────────────────────────
 
     def _browse_output(self):
@@ -352,6 +357,12 @@ class AccessLogAnalyzerApp(tk.Tk):
         # Get user count
         user_count = int(self.user_count_var.get()) if self.user_count_var.get() else 0
 
+        # Get excluded IPs
+        excluded_ips = [ip.strip() for ip in self.excluded_ips_var.get().split(",") if ip.strip()]
+        if len(excluded_ips) > 10:
+            messagebox.showwarning("Too Many IPs", "Maximum 10 IPs allowed. Only the first 10 will be used.")
+            excluded_ips = excluded_ips[:10]
+
         # Get product configs
         prod_configs = [row.get_values() for row in self.product_rows]
 
@@ -363,12 +374,12 @@ class AccessLogAnalyzerApp(tk.Tk):
         # Run in background thread
         thread = threading.Thread(
             target=self._run_analysis,
-            args=(log_paths, prod_configs, user_count, pdf_path),
+            args=(log_paths, prod_configs, user_count, pdf_path, excluded_ips),
             daemon=True
         )
         thread.start()
 
-    def _run_analysis(self, log_paths, prod_configs, user_count, pdf_path):
+    def _run_analysis(self, log_paths, prod_configs, user_count, pdf_path, excluded_ips=None):
         try:
             all_calls = []
 
@@ -382,7 +393,7 @@ class AccessLogAnalyzerApp(tk.Tk):
                 else:
                     product = prod_configs[0]["product"] if prod_configs else "jira"
 
-                calls = parse_log_file(log_path, product)
+                calls = parse_log_file(log_path, product, excluded_ips=excluded_ips)
                 calls = enrich_calls(calls)
                 all_calls.extend(calls)
 
@@ -394,7 +405,7 @@ class AccessLogAnalyzerApp(tk.Tk):
             plan = prod_configs[0]["edition"] if prod_configs else "standard"
 
             # Generate PDF
-            generate_pdf(all_calls, prod_configs[0]["product"], plan, pdf_path, user_count)
+            generate_pdf(all_calls, prod_configs[0]["product"], plan, pdf_path, user_count, excluded_ips=excluded_ips or [])
 
             # Update UI on main thread
             self.after(0, lambda: self._on_success(pdf_path, len(all_calls)))

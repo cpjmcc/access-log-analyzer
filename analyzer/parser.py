@@ -158,11 +158,19 @@ def parse_log_line(line: str, product: str) -> Optional[APICall]:
     )
 
 
-def parse_log_file(filepath: str, product: str) -> list[APICall]:
-    """Parse an entire log file and return all external API calls."""
+def parse_log_file(filepath: str, product: str, excluded_ips: list[str] = None) -> list[APICall]:
+    """Parse an entire log file and return all external API calls.
+    
+    Args:
+        filepath: Path to the log file
+        product: 'jira' or 'confluence'
+        excluded_ips: List of IP addresses to exclude (e.g. the server's own IP)
+    """
     calls = []
     skipped = 0
+    excluded = 0
     total = 0
+    excluded_set = set(ip.strip() for ip in (excluded_ips or []) if ip.strip())
 
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
@@ -170,11 +178,17 @@ def parse_log_file(filepath: str, product: str) -> list[APICall]:
                 total += 1
                 call = parse_log_line(line, product)
                 if call:
-                    calls.append(call)
+                    if call.ip in excluded_set:
+                        excluded += 1
+                    else:
+                        calls.append(call)
                 else:
                     skipped += 1
     except FileNotFoundError:
         raise FileNotFoundError(f"Log file not found: {filepath}")
 
-    print(f"  Parsed {total} log lines → {len(calls)} external API calls ({skipped} skipped)")
+    msg = f"  Parsed {total} log lines → {len(calls)} external API calls ({skipped} skipped)"
+    if excluded > 0:
+        msg += f", {excluded} excluded (system IPs)"
+    print(msg)
     return calls

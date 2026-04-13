@@ -28,7 +28,7 @@ def print_section(title: str):
     print(f"\n{Fore.YELLOW}── {title} {'─' * (65 - len(title))}{Style.RESET_ALL}")
 
 
-def generate_report(calls: list[APICall], product: str, plan: str = "standard", user_count: int = 0):
+def generate_report(calls: list[APICall], product: str, plan: str = "standard", user_count: int = 0, excluded_ips: list = None):
     """Generate a full rate limit risk report for the given API calls."""
 
     from .calculator import calculate_quota
@@ -64,6 +64,18 @@ def generate_report(calls: list[APICall], product: str, plan: str = "standard", 
         ["Rate limit tier", tier_label],
         ["Cloud hourly quota", f"{effective_quota:,} points/hour"],
     ], tablefmt="simple"), "\n")
+
+    # ── Load Balancer / Single IP Warning ────────────────────────────────────
+    from collections import Counter
+    ip_counts = Counter(c.ip for c in calls)
+    if ip_counts:
+        top_ip, top_count = ip_counts.most_common(1)[0]
+        top_pct = (top_count / len(calls)) * 100
+        if top_pct > 90:
+            print(f"{Fore.YELLOW}  ⚠️  NOTICE: {top_pct:.0f}% of API traffic originates from a single IP ({top_ip}).{Style.RESET_ALL}")
+            print(f"  This is likely a load balancer or reverse proxy forwarding external traffic.")
+            print(f"  Do NOT exclude this IP — it would remove all meaningful traffic from the analysis.")
+            print(f"  Traffic classification is based on User-Agent and path patterns instead.\n")
 
     # ── Hourly Quota Analysis ─────────────────────────────────────────────────
     print_section("1. Points-Based Hourly Quota Analysis")

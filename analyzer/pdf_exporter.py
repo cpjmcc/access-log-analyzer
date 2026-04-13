@@ -206,7 +206,7 @@ def add_page_number(canvas, doc):
     canvas.restoreState()
 
 
-def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str, user_count: int = 0):
+def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str, user_count: int = 0, excluded_ips: list = None):
     """Generate a PDF report and save to output_path."""
 
     doc = SimpleDocTemplate(
@@ -265,10 +265,39 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
         ["Rate limit tier",              tier_label],
         ["Hourly quota limit",           f"{effective_quota:,} points/hour"],
     ]
+    if excluded_ips:
+        summary_data.append(["System IPs excluded", ", ".join(excluded_ips)])
     t = Table(summary_data, colWidths=[W * 0.45, W * 0.55])
     t.setStyle(base_table_style())
     story.append(t)
     story.append(Spacer(1, 8))
+
+    # ── Load Balancer / Single IP Warning ────────────────────────────────────
+    from collections import Counter as _Counter
+    ip_counts = _Counter(c.ip for c in calls)
+    if ip_counts:
+        top_ip, top_count = ip_counts.most_common(1)[0]
+        top_pct = (top_count / len(calls)) * 100
+        if top_pct > 90:
+            warn_style = ParagraphStyle("lb_warn", fontSize=9, textColor=YELLOW,
+                                         fontName="Helvetica-Bold", spaceAfter=4,
+                                         backColor=YELLOW_LIGHT, leftIndent=8,
+                                         rightIndent=8, borderPad=6)
+            note_style = ParagraphStyle("lb_note", fontSize=8.5, textColor=TEXT_DARK,
+                                         fontName="Helvetica", spaceAfter=10,
+                                         backColor=YELLOW_LIGHT, leftIndent=8,
+                                         rightIndent=8, borderPad=4)
+            story.append(Paragraph(
+                f"⚠ Notice: {top_pct:.0f}% of API traffic originates from a single IP ({top_ip})",
+                warn_style
+            ))
+            story.append(Paragraph(
+                "This is likely a load balancer or reverse proxy forwarding external traffic to your "
+                "Jira/Confluence server. Do NOT exclude this IP — it would remove all meaningful traffic "
+                "from the analysis. Traffic classification is based on User-Agent and path patterns instead.",
+                note_style
+            ))
+            story.append(Spacer(1, 6))
 
     # ── 1. Hourly Quota ───────────────────────────────────────────────────────
     story.append(Paragraph("1. Points-Based Hourly Quota Analysis", styles["section"]))
