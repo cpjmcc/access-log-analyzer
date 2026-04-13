@@ -119,18 +119,38 @@ ENDPOINT_RULES = [
 ]
 
 
-def estimate_object_count(call: APICall) -> int:
+# ---------------------------------------------------------------------------
+# Endpoint-aware bytes-per-object estimates
+# Used to estimate how many objects were returned in a response, since
+# DC access logs only record response size — not object count.
+# ---------------------------------------------------------------------------
+BYTES_PER_OBJECT = {
+    "issue":    3_000,   # ~3KB per Jira issue (key, summary, status, fields, etc.)
+    "user":       500,   # ~500 bytes per user (note: users cost 2 pts each!)
+    "comment":  1_500,   # ~1.5KB per comment
+    "content":  10_000,  # ~10KB per Confluence page
+    "generic":  3_000,   # fallback for unknown object types
+}
+
+
+def estimate_object_count(call: APICall, object_type: str = "generic") -> int:
     """
     Estimate how many objects were returned in the response.
-    Uses response bytes as a rough proxy when exact counts aren't available in logs.
-    A typical Jira issue JSON is ~2-5KB; we estimate conservatively.
+    Uses endpoint-aware bytes-per-object estimates since DC access logs
+    only record response size in bytes, not actual object counts.
+
+    Guardrails:
+    - Minimum: 1 (a successful GET always returns at least 1 object)
+    - Maximum: 1,000 (caps runaway estimates from large non-API responses)
+    - Writes: always 0 (POST/PUT/PATCH/DELETE cost 1 point flat)
+    - Empty response: 1 (assume at least 1 object returned)
     """
     if call.method != "GET":
         return 0
     if call.response_bytes <= 0:
         return 1
-    # Rough estimate: ~3KB per object
-    estimated = max(1, call.response_bytes // 3000)
+    bytes_per_obj = BYTES_PER_OBJECT.get(object_type, BYTES_PER_OBJECT["generic"])
+    estimated = max(1, call.response_bytes // bytes_per_obj)
     return min(estimated, 1000)  # cap at 1000 to avoid outliers
 
 
@@ -149,7 +169,7 @@ def calculate_points(call: APICall) -> int:
     """Calculate the cloud rate limit points cost for a single API call."""
     endpoint_key = get_endpoint_key(call.path)
 
-    for pattern, method_filter, base_points, per_object_points, _ in ENDPOINT_RULES:
+    for pattern, method_filter, base_points, per_object_points, object_type in ENDPOINT_RULES:
         if not pattern.match(call.path.split("?")[0]):
             continue
         if method_filter and call.method != method_filter:
@@ -158,7 +178,7 @@ def calculate_points(call: APICall) -> int:
         if call.method in ("POST", "PUT", "PATCH", "DELETE"):
             return base_points  # Writes always cost 1 point flat
 
-        object_count = estimate_object_count(call)
+        object_count = estimate_object_count(call, object_type)
         return base_points + (object_count * per_object_points)
 
     return 1  # fallback

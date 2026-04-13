@@ -478,6 +478,129 @@ def generate_pdf(calls: list[APICall], product: str, plan: str, output_path: str
     t.setStyle(rec_style)
     story.append(t)
 
+    # ── Methodology & Disclaimer Page ────────────────────────────────────────
+    story.append(PageBreak())
+    story.append(Paragraph("Appendix: Methodology & Disclaimer", styles["section"]))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=GREY_MID, spaceAfter=10))
+
+    method_style = ParagraphStyle("method", fontSize=8.5, textColor=TEXT_DARK,
+                                   fontName="Helvetica", spaceAfter=6, leading=13)
+    heading_style = ParagraphStyle("mheading", fontSize=9.5, textColor=ATLASSIAN_BLUE,
+                                    fontName="Helvetica-Bold", spaceBefore=10, spaceAfter=4)
+
+    story.append(Paragraph("How Points Are Calculated", heading_style))
+    story.append(Paragraph(
+        "Atlassian Cloud uses a points-based model to measure API usage. Rather than simply counting "
+        "requests, each API call consumes points based on the work it performs — specifically the amount "
+        "of data returned and the complexity of the operation. Every request starts with <b>1 base point</b>. "
+        "Write operations (POST, PUT, PATCH, DELETE) always cost <b>1 point flat</b>, regardless of payload size. "
+        "Read operations (GET) cost <b>1 base point + additional points per object returned</b>:",
+        method_style
+    ))
+
+    points_data = [
+        ["Object Type", "Cost Per Object", "Notes"],
+        ["Jira Issues",            "1 point each",  "Returned by /issue and /search endpoints"],
+        ["Comments / Worklogs",    "1 point each",  "Returned by /issue/{key}/comment etc."],
+        ["Confluence Pages",       "1 point each",  "Returned by /rest/api/content"],
+        ["Users / Group Members",  "2 points each", "Most expensive — large group lookups can cost thousands of points"],
+    ]
+    pt = Table(points_data, colWidths=[W*0.28, W*0.22, W*0.5])
+    pt.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0), ATLASSIAN_BLUE),
+        ("TEXTCOLOR",     (0, 0), (-1, 0), colors.white),
+        ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE",      (0, 0), (-1, -1), 8),
+        ("FONTNAME",      (0, 1), (-1, -1), "Helvetica"),
+        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.white, GREY_LIGHT]),
+        ("GRID",          (0, 0), (-1, -1), 0.4, GREY_MID),
+        ("TOPPADDING",    (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
+    ]))
+    story.append(pt)
+
+    story.append(Paragraph("How Object Counts Are Estimated", heading_style))
+    story.append(Paragraph(
+        "Jira and Confluence Data Center access logs record the <b>response size in bytes</b> for each "
+        "request, but do not record how many objects (issues, users, pages, etc.) were actually returned. "
+        "Since the Atlassian Cloud points system charges per object returned, this analyzer estimates "
+        "object counts from response size using endpoint-aware bytes-per-object values:",
+        method_style
+    ))
+
+    est_data = [
+        ["Object Type", "Bytes Per Object", "Rationale"],
+        ["Jira Issue",         "~3,000 bytes (3 KB)",  "Typical issue JSON with key, summary, status, assignee, custom fields"],
+        ["User / Group Member","~500 bytes",            "Compact user record; note these cost 2 points each on Cloud"],
+        ["Comment",            "~1,500 bytes (1.5 KB)", "Comment body + metadata"],
+        ["Confluence Page",    "~10,000 bytes (10 KB)", "Page title, body excerpt, metadata, version info"],
+        ["Generic (fallback)", "~3,000 bytes (3 KB)",   "Used for endpoints not matching specific patterns above"],
+    ]
+    et = Table(est_data, colWidths=[W*0.25, W*0.28, W*0.47])
+    et.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0), ATLASSIAN_BLUE),
+        ("TEXTCOLOR",     (0, 0), (-1, 0), colors.white),
+        ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE",      (0, 0), (-1, -1), 8),
+        ("FONTNAME",      (0, 1), (-1, -1), "Helvetica"),
+        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.white, GREY_LIGHT]),
+        ("GRID",          (0, 0), (-1, -1), 0.4, GREY_MID),
+        ("TOPPADDING",    (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
+    ]))
+    story.append(et)
+    story.append(Spacer(1, 6))
+    story.append(Paragraph(
+        "Guardrails applied: minimum of 1 object per successful GET request; maximum of 1,000 objects "
+        "per request to prevent runaway estimates from unusually large responses.",
+        method_style
+    ))
+
+    story.append(Paragraph("Disclaimer & Limitations", heading_style))
+
+    disc_data = [
+        ["Limitation", "Impact"],
+        ["Object counts are estimated from response bytes, not actual API response data",
+         "Point costs may be over or underestimated by 20–50% depending on data density"],
+        ["Logs may not capture all API traffic (e.g. internal node-to-node calls)",
+         "Actual Cloud usage may differ slightly from what is shown here"],
+        ["DC access logs do not include OAuth app identity",
+         "All traffic from a single IP is grouped together regardless of which app made the call"],
+        ["Burst rate analysis uses per-second granularity from log timestamps",
+         "Sub-second bursts within the same logged second are not detectable"],
+        ["Cloud rate limits may change over time",
+         "Always verify current limits at developer.atlassian.com/cloud/jira/platform/rate-limiting/"],
+    ]
+    dt = Table(disc_data, colWidths=[W*0.48, W*0.52])
+    dt.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0), colors.HexColor("#42526E")),
+        ("TEXTCOLOR",     (0, 0), (-1, 0), colors.white),
+        ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE",      (0, 0), (-1, -1), 8),
+        ("FONTNAME",      (0, 1), (-1, -1), "Helvetica"),
+        ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.white, GREY_LIGHT]),
+        ("GRID",          (0, 0), (-1, -1), 0.4, GREY_MID),
+        ("TOPPADDING",    (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+    ]))
+    story.append(dt)
+    story.append(Spacer(1, 10))
+    story.append(Paragraph(
+        "This report is intended as a planning tool to help administrators understand migration risk. "
+        "Results should be used as directional guidance, not as precise rate limit predictions. "
+        "For authoritative rate limit information, refer to the Atlassian Developer Documentation: "
+        "https://developer.atlassian.com/cloud/jira/platform/rate-limiting/",
+        ParagraphStyle("disc_footer", fontSize=8, textColor=TEXT_MID, fontName="Helvetica-Oblique",
+                        leading=12, spaceAfter=6)
+    ))
+
     # ── Build PDF ─────────────────────────────────────────────────────────────
     doc.build(story, onFirstPage=add_page_number, onLaterPages=add_page_number)
     print(f"\n📄 PDF report saved to: {output_path}\n")
