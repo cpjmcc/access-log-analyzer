@@ -505,6 +505,10 @@ class AccessLogAnalyzerApp(tk.Tk):
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
+def main():
     app = AccessLogAnalyzerApp()
     app.mainloop()
+
+
+if __name__ == "__main__":
+    main()

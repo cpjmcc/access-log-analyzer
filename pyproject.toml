@@ -1,0 +1,77 @@
+[project]
+name = "access-log-analyzer"
+version = "0.1.0"
+description = "Analyze Jira and Confluence Data Center access logs for Atlassian Cloud rate limit risks"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "Pillow>=10.0.0",
+  "colorama==0.4.6",
+  "pdf2image>=1.16.0",
+  "pymupdf==1.23.8",
+  "reportlab==4.2.5",
+  "tabulate==0.9.0",
+]
+
+[project.scripts]
+access-log-analyzer = "main:main"
+access-log-analyzer-gui = "app:main"
+
+[dependency-groups]
+dev = [
+  "ruff>=0.15.10",
+  "ty>=0.0.29",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["analyzer"]
+py-modules = ["main", "app", "generate_user_guide"]
+include-package-data = false
+
+[tool.setuptools.package-data]
+analyzer = []
+
+[tool.setuptools.exclude-package-data]
+"*" = ["sample_logs/*"]
+
+[tool.setuptools.data-files]
+"sample_logs" = [
+  "sample_logs/confluence-access.log",
+  "sample_logs/jira-access-large.log",
+  "sample_logs/jira-access.log",
+  "sample_logs/jira-heavy-traffic.log",
+]
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ty]
+
+[tool.ty.environment]
+python-version = "3.11"
+
+[tool.ty.src]
+root = "."
+
+[tool.ty.rules]
+possibly-unresolved-reference = "warn"
+missing-import = "warn"
+
+[tool.ty.terminal]
+output-format = "concise"
+
+[tool.ty.analysis]
+respect-type-ignore-comments = true
+allowed-unresolved-imports = []
+replace-imports-with-any = []

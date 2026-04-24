@@ -192,7 +192,7 @@ def main():
     story.append(Spacer(1, 5))
 
     story.append(Paragraph("Step 2 — Install dependencies:", styles["h3"]))
-    story.append(code_block("pip3 install -r requirements.txt", W))
+    story.append(code_block("uv sync", W))
     story.append(Spacer(1, 5))
     story.append(Paragraph(
         "This installs three libraries: tabulate (terminal tables), colorama (terminal colors), "
@@ -421,7 +421,7 @@ def main():
         ["pip: command not found",
          "Use pip3 instead of pip."],
         ["ModuleNotFoundError: No module named 'tabulate'",
-         "Run: pip3 install -r requirements.txt"],
+         "Run: uv sync"],
         ["Very few API calls parsed",
          "Your log may use a non-standard format. Check the first few lines with: head -5 access.log"],
         ["PDF not generating",

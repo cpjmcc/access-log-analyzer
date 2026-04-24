@@ -1,11 +1,120 @@
-jira-rate-limit-report.pdf
-Access-Log-Analyzer-User-Guide.pdf
+# Created from a Toptal-style template base:
+# visualstudiocode,linux,macos,windows,python
+
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-Wireframe.png
-Wireframe.pn
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
 build/
 dist/
+downloads/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-wheel-metadata/
+
+# PyInstaller
+*.manifest
 *.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+pytestdebug.log
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Type checkers / linters / formatters
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Environments
+.env
+.env.*
+.venv/
+venv/
+env/
+ENV/
+.envrc
+.python-version
+
+# Python dependency managers
+poetry.lock
+Pipfile.lock
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+.history/
+
+# OS-generated files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+Desktop.ini
+Thumbs.db
+$RECYCLE.BIN/
+
+# Project-specific generated assets / binaries
+jira-rate-limit-report.pdf
+Access-Log-Analyzer-User-Guide.pdf
+Wireframe.png
+Wireframe.pn
 AppIcon.iconset/
 app-logo-1024.png
+
+# Misc
+*.log
+.tmp/
+tmp/
+
+# Local Claude / agent context artifacts (if generated locally)
+.claude/
+.rovodev/
+
+# Keep nested tool-specific gitignores intact
+!.ruff_cache/.gitignore
+
+# If you intentionally want to commit lock files, remove the relevant line(s) above.
+
