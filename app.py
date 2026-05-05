@@ -194,9 +194,44 @@ class AccessLogAnalyzerApp(tk.Tk):
             pady=14, padx=0
         ).pack(side="left")
 
-        # ── Scrollable main content ────────────────────────────────────────────
-        main = tk.Frame(self, bg=BG)
-        main.pack(fill="both", expand=True, padx=20, pady=16)
+        # ── Run Button (pinned above preview, always visible) ──────────────────
+        run_frame = tk.Frame(self, bg=BG)
+        run_frame.pack(side="bottom", fill="x", padx=20, pady=(0, 0))
+
+        # ── PDF Preview Card (pinned above run frame) ──────────────────────────
+        preview_card = self._make_card(self, "🔍  Report Preview")
+        preview_card.pack(side="bottom", fill="both", expand=True, padx=20, pady=(0, 8))
+
+        # ── Scrollable config area ─────────────────────────────────────────────
+        config_outer = tk.Frame(self, bg=BG)
+        config_outer.pack(side="top", fill="both", expand=False, padx=20, pady=(16, 0))
+
+        config_canvas = tk.Canvas(config_outer, bg=BG, highlightthickness=0)
+        config_scrollbar = ttk.Scrollbar(config_outer, orient="vertical", command=config_canvas.yview)
+        config_canvas.configure(yscrollcommand=config_scrollbar.set)
+
+        config_scrollbar.pack(side="right", fill="y")
+        config_canvas.pack(side="left", fill="both", expand=True)
+
+        main = tk.Frame(config_canvas, bg=BG)
+        main_window = config_canvas.create_window((0, 0), window=main, anchor="nw")
+
+        def _on_config_resize(event):
+            config_canvas.itemconfig(main_window, width=event.width)
+        config_canvas.bind("<Configure>", _on_config_resize)
+
+        def _on_main_configure(event):
+            config_canvas.configure(scrollregion=config_canvas.bbox("all"))
+            # Auto-size canvas height to content, capped at 40% of window height
+            content_h = main.winfo_reqheight()
+            max_h = int(self.winfo_height() * 0.40)
+            config_canvas.configure(height=min(content_h, max_h))
+        main.bind("<Configure>", _on_main_configure)
+
+        # Mouse wheel scrolling on config area
+        config_canvas.bind("<MouseWheel>", lambda e: config_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        config_canvas.bind("<Button-4>", lambda e: config_canvas.yview_scroll(-1, "units"))
+        config_canvas.bind("<Button-5>", lambda e: config_canvas.yview_scroll(1, "units"))
 
         # ── Log Files Card ─────────────────────────────────────────────────────
         self._log_card = self._make_card(main, "📁  Log Files")
@@ -264,20 +299,13 @@ class AccessLogAnalyzerApp(tk.Tk):
         out_entry = make_path_entry(pdf_row, self.pdf_output_path)
         out_entry.pack(side="left", fill="x", expand=True)
 
-        # ── Run Button ─────────────────────────────────────────────────────────
-        run_frame = tk.Frame(self, bg=BG)
-        run_frame.pack(pady=(0, 12))
-
+        # ── Run Button content ─────────────────────────────────────────────────
         self._run_btn = make_button(run_frame, "▶   RUN ANALYSIS", self._run, primary=True)
         self._run_btn.configure(font=("Helvetica", 12, "bold"), padx=32, pady=10)
-        self._run_btn.pack()
+        self._run_btn.pack(pady=(8, 0))
 
         self._status_label = make_label(run_frame, "", color=TEXT_MID, size=9)
-        self._status_label.pack(pady=(6, 0))
-
-        # ── PDF Preview Card ───────────────────────────────────────────────────
-        preview_card = self._make_card(self, "🔍  Report Preview")
-        preview_card.pack(fill="both", expand=True, padx=20, pady=(0, 16))
+        self._status_label.pack(pady=(4, 8))
 
         preview_inner = tk.Frame(preview_card, bg=CARD_BG)
         preview_inner.pack(fill="both", expand=True, padx=12, pady=(0, 12))
