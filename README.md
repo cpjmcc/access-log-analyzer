@@ -85,12 +85,26 @@ uv lock --python 3.11
 
 ## Usage
 
-### GUI App (Recommended)
+### Native macOS App (Recommended)
+
+Launch from **Applications**, **Spotlight**, or **Launchpad**:
+
+1. Click **Browse...** and select your access log file or directory
+2. Choose the product (Jira or Confluence)
+3. Select a Cloud tier (Standard, Premium, Enterprise)
+4. Choose an output directory and PDF filename
+5. Click **Run Analysis**
+6. Watch real-time progress (lines scanned, API calls found, ETA)
+7. When analysis completes, click **Open Completed Report** to view the PDF
+
+### Development: GUI from Source
+
 ```bash
+cd access-log-analyzer
 uv run access-log-analyzer-gui
 ```
 
-### CLI
+### Development: CLI from Source
 
 ```bash
 # Analyze a Jira access log against Standard plan limits
@@ -107,13 +121,6 @@ uv run access-log-analyzer --log /path/to/confluence/access.log --product conflu
 
 # Try with the included sample log
 uv run access-log-analyzer --log sample_logs/jira-access.log --product jira
-```
-
-If you prefer, these equivalent direct commands also work:
-
-```bash
-uv run python app.py
-uv run python main.py --log sample_logs/jira-access.log --product jira
 ```
 
 ## Dependency Files
