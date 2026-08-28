@@ -10,6 +10,16 @@ When migrating from Jira/Confluence Data Center to Atlassian Cloud, your instanc
 2. **Burst rate limits** — Are any integrations sending too many requests per second?
 3. **Per-issue write limits** — Are any automations updating the same issue too frequently?
 
+## Key Features
+
+- **Multi-format log parsing** — Automatically detects and parses standard, Jira DC custom, and Confluence proxy log formats
+- **Large-log streaming** — Handles 60+ GB logs without memory exhaustion using disk-backed SQLite aggregation
+- **Real-time progress** — Shows live parsing metrics, throughput, and ETA during analysis
+- **Native macOS app** — Packaged as a true `.app` bundle; appears in Dock with app icon, not Python process
+- **Clear completion state** — Knows exactly when analysis is done and the PDF is ready
+- **Safe cancellation** — Stop analysis at any time without corrupting the output
+- **Internal traffic filtering** — Excludes Jira/Confluence application-link traffic from reports
+
 ## Atlassian Cloud Rate Limits
 
 Based on [Atlassian's rate limiting documentation](https://developer.atlassian.com/cloud/jira/platform/rate-limiting/):
@@ -25,6 +35,18 @@ Based on [Atlassian's rate limiting documentation](https://developer.atlassian.c
 
 > **Note:** Requires Python 3.11. This project is currently constrained to `<3.14` because `pymupdf==1.23.8` did not build cleanly under Python 3.14 in this environment.
 
+### Option 1: Native macOS App (Easiest)
+
+Copy the pre-built app to Applications (one-time):
+
+```bash
+cp -R "/path/to/dist/Access Log Analyzer.app" /Applications/
+```
+
+Then launch from **Applications**, **Spotlight**, or **Launchpad**. The app appears as "Access Log Analyzer" in the Dock with the app icon.
+
+### Option 2: From Source (Development)
+
 ```bash
 # Install uv, Python 3.11, tkinter, and poppler if needed
 brew install uv python@3.11 python-tk@3.11 poppler
@@ -35,6 +57,18 @@ uv sync --python 3.11 --group dev
 ```
 
 This creates a local `.venv`, installs runtime dependencies from `pyproject.toml`, and includes the development tools.
+
+### Rebuilding the macOS App
+
+After making code changes, rebuild the app bundle:
+
+```bash
+cd access-log-analyzer
+./build-macos-app.sh
+cp -R "dist/Access Log Analyzer.app" /Applications/
+```
+
+The `build-macos-app.sh` script uses PyInstaller to package the analyzer as a native macOS application.
 
 ## Development Commands
 
