@@ -7,14 +7,17 @@ to predict rate limiting issues when migrating to Atlassian Cloud.
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import threading
+import logging
 import os
+import queue
 import tempfile
-import io
-from PIL import Image, ImageTk
-from pdf2image import convert_from_path
+import threading
+import time
+import webbrowser
+from pathlib import Path
+from typing import cast
 
-from analyzer.parser import parse_log_file
+from analyzer.parser import parse_log_file, iter_parsed_calls
 from analyzer.calculator import enrich_calls, calculate_quota
 from analyzer.reporter import generate_report
 from analyzer.pdf_exporter import generate_pdf
@@ -36,9 +39,118 @@ YELLOW      = "#FF991F"
 PRODUCTS    = ["Jira", "Confluence"]
 EDITIONS    = ["Standard", "Premium", "Enterprise"]
 EDITION_MAP = {"standard": "Standard", "premium": "Premium", "enterprise": "Enterprise"}
+LOGGER = logging.getLogger("access_log_analyzer.gui")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+# ── Custom Flat Button Class ──────────────────────────────────────────────
+class FlatButton(tk.Frame):
+    """
+    A macOS-friendly flat button widget based on tk.Frame + tk.Label.
+    Honors bg/fg colors cross-platform, supports configure(state=...),
+    cget for state, command invocation, and Enter/Leave hover effects.
+    """
+    def __init__(self, parent, text="", command=None, bg=BLUE, fg="white",
+                 font=("Helvetica", 10, "normal"), padx=16, pady=8,
+                 cursor="hand2", **kwargs):
+        super().__init__(parent, bg=kwargs.get("bg", parent.cget("bg")), 
+                         highlightthickness=0, **{k: v for k, v in kwargs.items() 
+                                                   if k not in ["bg"]})
+        self._text = text
+        self._command = command
+        self._state = "normal"
+        self._bg_normal = bg
+        self._fg_normal = fg
+        self._bg_hover = None
+        self._fg_hover = None
+        self._bg_disabled = BG
+        self._fg_disabled = "#A5ADBA"
+        self._font = font
+        self._cursor = cursor
+        self._original_cursor = cursor
+        
+        self.label = tk.Label(
+            self, text=text, bg=bg, fg=fg, font=font,
+            padx=padx, pady=pady, cursor=cursor, highlightthickness=0
+        )
+        self.label.pack(fill="both", expand=True)
+        
+        self.label.bind("<Button-1>", self._on_click)
+        self.label.bind("<Enter>", self._on_enter)
+        self.label.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+    
+    def configure(self, **kwargs):
+        """Configure button properties, including state and colors."""
+        if "state" in kwargs:
+            self._state = kwargs.pop("state")
+            self._update_appearance()
+        if "bg" in kwargs:
+            self._bg_normal = kwargs.pop("bg")
+        if "fg" in kwargs:
+            self._fg_normal = kwargs.pop("fg")
+        if "activebackground" in kwargs:
+            self._bg_hover = kwargs.pop("activebackground")
+        if "activeforeground" in kwargs:
+            self._fg_hover = kwargs.pop("activeforeground")
+        if "command" in kwargs:
+            self._command = kwargs.pop("command")
+        if "text" in kwargs:
+            self._text = kwargs.pop("text")
+            self.label.configure(text=self._text)
+        if "cursor" in kwargs:
+            self._cursor = kwargs.pop("cursor")
+            self._original_cursor = self._cursor
+        if "disabledforeground" in kwargs:
+            self._fg_disabled = kwargs.pop("disabledforeground")
+        if kwargs:
+            super().configure(**kwargs)
+        self._update_appearance()
+    
+    def cget(self, key):
+        """Get button property."""
+        if key == "state":
+            return self._state
+        if key == "text":
+            return self._text
+        return super().cget(key)
+    
+    def _update_appearance(self):
+        """Update label appearance based on current state."""
+        if self._state == "normal":
+            super().configure(bg=self._bg_normal)
+            self.label.configure(
+                bg=self._bg_normal, fg=self._fg_normal,
+                cursor=self._original_cursor
+            )
+        elif self._state == "disabled":
+            super().configure(bg=self._bg_disabled)
+            self.label.configure(
+                bg=self._bg_disabled, fg=self._fg_disabled,
+                cursor=""
+            )
+    
+    def _on_click(self, event):
+        """Handle button click."""
+        if self._state == "normal" and self._command:
+            self._command()
+    
+    def _on_enter(self, event):
+        """Handle mouse enter (hover)."""
+        if self._state == "normal":
+            if self._bg_hover:
+                self.label.configure(bg=self._bg_hover)
+            if self._fg_hover:
+                self.label.configure(fg=self._fg_hover)
+    
+    def _on_leave(self, event):
+        """Handle mouse leave (unhover)."""
+        if self._state == "normal":
+            self.label.configure(bg=self._bg_normal, fg=self._fg_normal)
+
 
 def make_button(parent, text, command, primary=True, small=False):
     bg     = BLUE if primary else CARD_BG
@@ -48,6 +160,8 @@ def make_button(parent, text, command, primary=True, small=False):
     btn = tk.Button(
         parent, text=text, command=command,
         bg=bg, fg=fg, relief="flat", cursor="hand2",
+        default="active" if primary else "normal",
+        takefocus=False,
         font=("Helvetica", font_size, "bold" if primary else "normal"),
         padx=10 if small else 16, pady=4 if small else 8,
         highlightthickness=1, highlightbackground=border,
@@ -159,8 +273,8 @@ class AccessLogAnalyzerApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Access Log Analyzer")
-        self.geometry("900x820")
-        self.minsize(800, 700)
+        self.geometry("700x550")
+        self.minsize(700, 550)
         self.configure(bg=BG)
         self.resizable(True, True)
 
@@ -171,11 +285,17 @@ class AccessLogAnalyzerApp(tk.Tk):
         self.user_count_var = tk.StringVar(value="")
         self.excluded_ips_var = tk.StringVar(value="")
         self.exclude_system_var = tk.BooleanVar(value=True)  # Exclude system calls by default
-        self._pdf_images = []  # Keep references to avoid GC
+        self._latest_pdf_path: str | None = None
+        self._analysis_events: queue.Queue[
+            tuple[str, int, str | tuple[str, int]]
+        ] = queue.Queue()
+        self._analysis_run_id = 0
+        self._cancel_event: threading.Event | None = None  # Cooperative cancellation signal
 
         self._build_ui()
-        self._add_log_row("Jira Log File")
+        self._add_log_row("Log File")
         self._add_product_row()
+        self.after(100, self._poll_analysis_events)
 
     # ── UI Construction ───────────────────────────────────────────────────────
 
@@ -186,25 +306,17 @@ class AccessLogAnalyzerApp(tk.Tk):
         tk.Label(
             header, text="Access Log Analyzer",
             font=("Helvetica", 16, "bold"), bg=BLUE, fg="white",
-            pady=14, padx=20
+            pady=8, padx=20
         ).pack(side="left")
         tk.Label(
             header, text="Jira & Confluence DC → Cloud Migration",
             font=("Helvetica", 10), bg=BLUE, fg=BLUE_LIGHT,
-            pady=14, padx=0
+            pady=8, padx=0
         ).pack(side="left")
-
-        # ── Run Button (pinned above preview, always visible) ──────────────────
-        run_frame = tk.Frame(self, bg=BG)
-        run_frame.pack(side="bottom", fill="x", padx=20, pady=(0, 0))
-
-        # ── PDF Preview Card (pinned above run frame) ──────────────────────────
-        preview_card = self._make_card(self, "🔍  Report Preview")
-        preview_card.pack(side="bottom", fill="both", expand=True, padx=20, pady=(0, 8))
 
         # ── Scrollable config area ─────────────────────────────────────────────
         config_outer = tk.Frame(self, bg=BG)
-        config_outer.pack(side="top", fill="both", expand=False, padx=20, pady=(16, 0))
+        config_outer.pack(side="top", fill="both", expand=True, padx=10, pady=(10, 0))
 
         config_canvas = tk.Canvas(config_outer, bg=BG, highlightthickness=0)
         config_scrollbar = ttk.Scrollbar(config_outer, orient="vertical", command=config_canvas.yview)
@@ -221,11 +333,8 @@ class AccessLogAnalyzerApp(tk.Tk):
         config_canvas.bind("<Configure>", _on_config_resize)
 
         def _on_main_configure(event):
+            # Keep the scroll region current while the canvas fills all available space.
             config_canvas.configure(scrollregion=config_canvas.bbox("all"))
-            # Auto-size canvas height to content, capped at 40% of window height
-            content_h = main.winfo_reqheight()
-            max_h = int(self.winfo_height() * 0.40)
-            config_canvas.configure(height=min(content_h, max_h))
         main.bind("<Configure>", _on_main_configure)
 
         # Mouse wheel scrolling on config area
@@ -233,48 +342,50 @@ class AccessLogAnalyzerApp(tk.Tk):
         config_canvas.bind("<Button-4>", lambda e: config_canvas.yview_scroll(-1, "units"))
         config_canvas.bind("<Button-5>", lambda e: config_canvas.yview_scroll(1, "units"))
 
-        # ── Log Files Card ─────────────────────────────────────────────────────
-        self._log_card = self._make_card(main, "📁  Log Files")
-        self._log_card.pack(fill="x", pady=(0, 12))
+        # ── Unified Analysis Setup Form ────────────────────────────────────────
+        setup_card = self._make_card(main, "⚙️  Analysis Setup")
+        setup_card.pack(fill="x", pady=(0, 8), padx=0)
 
-        self._log_rows_frame = tk.Frame(self._log_card, bg=CARD_BG)
-        self._log_rows_frame.pack(fill="x", padx=16, pady=(0, 8))
+        # Source input: single row on top
+        source_header = tk.Frame(setup_card, bg=CARD_BG)
+        source_header.pack(fill="x", padx=10, pady=(10, 4))
+        make_label(source_header, "Source input", bold=True, color=TEXT_DARK, size=9).pack(side="left")
+        self._log_rows_frame = tk.Frame(setup_card, bg=CARD_BG)
+        self._log_rows_frame.pack(fill="x", padx=10, pady=(0, 8))
 
-        add_log_btn = make_button(self._log_card, "+ Add Log File", self._add_log_row, primary=False, small=True)
-        add_log_btn.pack(anchor="w", padx=16, pady=(0, 12))
+        ttk.Separator(setup_card, orient="horizontal").pack(fill="x", padx=10, pady=5)
 
-        # ── Product Configuration Card ─────────────────────────────────────────
-        self._prod_card = self._make_card(main, "⚙️  Product Configuration")
-        self._prod_card.pack(fill="x", pady=(0, 12))
+        # Existing options directly below
+        options_frame = tk.Frame(setup_card, bg=CARD_BG)
+        options_frame.pack(fill="x", padx=10, pady=5)
+        
+        # Product configuration
+        product_header = tk.Frame(options_frame, bg=CARD_BG)
+        product_header.pack(fill="x", pady=(0, 6))
+        make_label(product_header, "Product and plan", bold=True, color=TEXT_DARK, size=9).pack(side="left")
+        make_button(
+            product_header, "+ Add Product", self._add_product_row, primary=False, small=True,
+        ).pack(side="right")
+        self._product_rows_frame = tk.Frame(options_frame, bg=CARD_BG)
+        self._product_rows_frame.pack(fill="x", pady=(0, 10))
 
-        self._product_rows_frame = tk.Frame(self._prod_card, bg=CARD_BG)
-        self._product_rows_frame.pack(fill="x", padx=16, pady=(0, 8))
-
-        add_prod_btn = make_button(self._prod_card, "+ Add Product", self._add_product_row, primary=False, small=True)
-        add_prod_btn.pack(anchor="w", padx=16, pady=(0, 4))
-
-        # User count
-        user_frame = tk.Frame(self._prod_card, bg=CARD_BG)
-        user_frame.pack(fill="x", padx=16, pady=(4, 8))
-        make_label(user_frame, "User Count:", color=TEXT_MID, size=9).pack(side="left", padx=(0, 8))
+        # Analysis options
+        analysis_opts = tk.Frame(options_frame, bg=CARD_BG)
+        analysis_opts.pack(fill="x", pady=5)
+        make_label(analysis_opts, "User count:", color=TEXT_MID, size=9).pack(side="left", padx=(0, 6))
         vcmd = (self.register(self._validate_int), "%P")
         self._user_entry = tk.Entry(
-            user_frame, textvariable=self.user_count_var,
+            analysis_opts, textvariable=self.user_count_var,
             validate="key", validatecommand=vcmd,
-            font=("Helvetica", 9), relief="flat", width=12,
+            font=("Helvetica", 9), relief="flat", width=10,
             bg=BG, fg=TEXT_DARK,
             highlightthickness=1, highlightbackground=BORDER,
             highlightcolor=BLUE,
         )
-        self._user_entry.pack(side="left")
-        make_label(user_frame, "  (optional — enables Tier 2 per-tenant quota)", color=TEXT_LIGHT, size=8).pack(side="left")
-
-        # System calls toggle
-        toggle_frame = tk.Frame(self._prod_card, bg=CARD_BG)
-        toggle_frame.pack(fill="x", padx=16, pady=(0, 12))
+        self._user_entry.pack(side="left", padx=(0, 12))
         self._system_toggle = tk.Checkbutton(
-            toggle_frame,
-            text="Exclude unauthenticated / system API calls from analysis",
+            analysis_opts,
+            text="Exclude unauthenticated / system API calls",
             variable=self.exclude_system_var,
             command=self._on_toggle_system_calls,
             bg=CARD_BG, fg=TEXT_DARK,
@@ -284,53 +395,61 @@ class AccessLogAnalyzerApp(tk.Tk):
             cursor="hand2",
         )
         self._system_toggle.pack(side="left")
-        make_label(toggle_frame, "  (system calls to itself won't hit Cloud rate limits)", color=TEXT_LIGHT, size=8).pack(side="left")
 
-        # ── PDF Output Card ────────────────────────────────────────────────────
-        pdf_card = self._make_card(main, "📄  PDF Output")
-        pdf_card.pack(fill="x", pady=(0, 12))
+        ttk.Separator(setup_card, orient="horizontal").pack(fill="x", padx=10, pady=5)
 
-        pdf_row = tk.Frame(pdf_card, bg=CARD_BG)
-        pdf_row.pack(fill="x", padx=16, pady=(0, 12))
-
-        browse_btn = make_button(pdf_row, "📂  Choose PDF Output Path", self._browse_output, primary=False, small=True)
+        # PDF output
+        pdf_row = tk.Frame(setup_card, bg=CARD_BG)
+        pdf_row.pack(fill="x", padx=10, pady=5)
+        make_label(pdf_row, "PDF output:", bold=True, color=TEXT_DARK, size=9).pack(side="left", padx=(0, 8))
+        browse_btn = make_button(
+            pdf_row, "Choose Path", self._browse_output, primary=False, small=True,
+        )
         browse_btn.pack(side="left", padx=(0, 8))
-
         out_entry = make_path_entry(pdf_row, self.pdf_output_path)
         out_entry.pack(side="left", fill="x", expand=True)
 
-        # ── Run Button content ─────────────────────────────────────────────────
-        self._run_btn = make_button(run_frame, "▶   RUN ANALYSIS", self._run, primary=True)
-        self._run_btn.configure(font=("Helvetica", 12, "bold"), padx=32, pady=10)
-        self._run_btn.pack(pady=(8, 0))
-
-        self._status_label = make_label(run_frame, "", color=TEXT_MID, size=9)
-        self._status_label.pack(pady=(4, 8))
-
-        preview_inner = tk.Frame(preview_card, bg=CARD_BG)
-        preview_inner.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-
-        # Scrollable canvas
-        self._canvas = tk.Canvas(preview_inner, bg="#E0E0E0", highlightthickness=0)
-        scrollbar_y = ttk.Scrollbar(preview_inner, orient="vertical", command=self._canvas.yview)
-        scrollbar_x = ttk.Scrollbar(preview_inner, orient="horizontal", command=self._canvas.xview)
-
-        self._canvas.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
-        scrollbar_y.pack(side="right", fill="y")
-        scrollbar_x.pack(side="bottom", fill="x")
-        self._canvas.pack(side="left", fill="both", expand=True)
-
-        # Mouse wheel scrolling
-        self._canvas.bind("<MouseWheel>", lambda e: self._canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
-        self._canvas.bind("<Button-4>", lambda e: self._canvas.yview_scroll(-1, "units"))
-        self._canvas.bind("<Button-5>", lambda e: self._canvas.yview_scroll(1, "units"))
-
-        # Placeholder text
-        self._placeholder = tk.Label(
-            self._canvas, text="Run an analysis to see the PDF report here",
-            font=("Helvetica", 12), bg="#E0E0E0", fg=TEXT_LIGHT
+        # ── Actions, progress, and completed report (sequential below settings) ─
+        actions_frame = tk.Frame(main, bg=BG)
+        actions_frame.pack(fill="x", pady=(5, 5))
+        self._run_btn = FlatButton(
+            actions_frame, text="▶   RUN ANALYSIS", command=self._run,
+            bg=BLUE, fg="white",
+            font=("Helvetica", 11, "bold"), padx=18, pady=8,
+            cursor="hand2"
         )
-        self._canvas.create_window(450, 100, window=self._placeholder)
+        self._run_btn.configure(
+            activebackground="#0747A6", activeforeground="white",
+        )
+        self._run_btn.pack(side="left", padx=6)
+        self._cancel_btn = FlatButton(
+            actions_frame, text="✕  CANCEL", command=self._cancel_analysis,
+            bg=BG, fg="#A5ADBA",
+            font=("Helvetica", 11, "normal"), padx=18, pady=8,
+            cursor=""
+        )
+        self._cancel_btn.configure(
+            state="disabled",
+            activebackground="#FF991F", activeforeground=TEXT_DARK,
+            disabledforeground="#A5ADBA",
+        )
+        self._cancel_btn.pack(side="left", padx=6)
+
+        progress_frame = tk.Frame(main, bg=BG)
+        progress_frame.pack(fill="x", pady=(5, 10))
+        self._progress_bar = ttk.Progressbar(progress_frame, mode="indeterminate")
+        self._progress_bar.pack(fill="x", expand=True)
+        self._status_label = make_label(progress_frame, "", color=TEXT_MID, size=9)
+        self._status_label.pack(pady=(4, 0), anchor="w")
+
+        self._report_card = tk.Frame(main, bg=BG)
+        self._report_card.pack(fill="x", pady=(5, 10))
+        report_inner = tk.Frame(self._report_card, bg=BG)
+        report_inner.pack(fill="x")
+        self._open_pdf_btn = make_button(report_inner, "↗  Open Completed Report", self._open_completed_pdf, primary=False, small=True)
+        self._open_pdf_btn.configure(state="disabled")
+        self._open_pdf_btn.pack(anchor="w")
+        self._report_card.pack_forget()
 
     def _make_card(self, parent, title: str) -> tk.Frame:
         """Create a white card with a section title."""
@@ -347,7 +466,7 @@ class AccessLogAnalyzerApp(tk.Tk):
 
     def _add_log_row(self, label="Log File"):
         row = LogFileRow(self._log_rows_frame, label=label)
-        row.pack(fill="x", pady=4)
+        row.pack(fill="x", padx=10, pady=5)
         self.log_rows.append(row)
 
     def _add_product_row(self):
@@ -361,7 +480,7 @@ class AccessLogAnalyzerApp(tk.Tk):
             self._product_rows_frame,
             on_remove=remove if len(self.product_rows) >= 1 else None
         )
-        row.pack(fill="x", pady=4)
+        row.pack(fill="x", padx=10, pady=5)
         self.product_rows.append(row)
 
     # ── Toggle Handler ────────────────────────────────────────────────────────
@@ -392,7 +511,7 @@ class AccessLogAnalyzerApp(tk.Tk):
         if path:
             self.pdf_output_path.set(path)
 
-    # ── Run Analysis ──────────────────────────────────────────────────────────
+    # ── Run Analysis ──────────────────────────────────────────────────────
 
     def _run(self):
         # Validate log files
@@ -417,123 +536,415 @@ class AccessLogAnalyzerApp(tk.Tk):
             messagebox.showwarning("Too Many IPs", "Maximum 10 IPs allowed. Only the first 10 will be used.")
             excluded_ips = excluded_ips[:10]
 
-        # Get product configs
         prod_configs = [row.get_values() for row in self.product_rows]
-
-        # Get system call toggle state
         exclude_system = self.exclude_system_var.get()
 
-        # Disable run button and show status
-        self._run_btn.configure(state="disabled", text="⏳  Running...")
-        self._status_label.configure(text="Analyzing logs...", fg=TEXT_MID)
-        self.update()
+        # The worker communicates only through a thread-safe queue. Tkinter calls
+        # must stay on the main thread or the status can remain stale indefinitely.
+        self._analysis_run_id += 1
+        run_id = self._analysis_run_id
+        self._analysis_events = queue.Queue()
+        event_queue = self._analysis_events
+        self._latest_pdf_path = None
+        self._cancel_event = threading.Event()  # Create cancellation event
+        self._open_pdf_btn.configure(state="disabled")
+        self._open_pdf_btn.pack_forget()
+        self._report_card.pack_forget()
 
-        # Run in background thread
+        self._run_btn.configure(state="disabled", text="⏳  Running...", bg=BG, fg="#A5ADBA")
+        self._cancel_btn.configure(state="normal", bg="#FFAB00", fg=TEXT_DARK, cursor="hand2")
+        self._progress_bar.start()
+        self._status_label.configure(
+            text=f"Preparing to analyze {len(log_paths)} selected log file(s)...", fg=TEXT_MID
+        )
+        self.update_idletasks()
+        LOGGER.info(
+            "Run %d started: files=%d, output=%s, excluded_ips=%d, exclude_system=%s",
+            run_id, len(log_paths), pdf_path, len(excluded_ips), exclude_system,
+        )
+
         thread = threading.Thread(
             target=self._run_analysis,
-            args=(log_paths, prod_configs, user_count, pdf_path, excluded_ips, exclude_system),
-            daemon=True
+            args=(
+                log_paths, prod_configs, user_count, pdf_path, excluded_ips,
+                exclude_system, run_id, event_queue,
+            ),
+            daemon=True,
+            name=f"analysis-run-{run_id}",
         )
         thread.start()
 
-    def _run_analysis(self, log_paths, prod_configs, user_count, pdf_path, excluded_ips=None, exclude_system=True):
+    def _cancel_analysis(self):
+        """Signal the analysis thread to cancel gracefully."""
+        if self._cancel_event:
+            LOGGER.info("Cancel requested by user")
+            self._cancel_event.set()
+            self._cancel_btn.configure(state="disabled", bg=BG, fg="#A5ADBA")
+            self._status_label.configure(text="Cancelling analysis...", fg=YELLOW)
+
+    def _run_analysis(
+        self, log_paths, prod_configs, user_count, pdf_path, excluded_ips,
+        exclude_system, run_id, event_queue,
+    ):
+        """Parse logs and build the report without touching Tkinter widgets."""
+        def emit(event_type, payload):
+            if event_type == "status":
+                LOGGER.info("Run %d: %s", run_id, payload)
+            elif event_type == "error":
+                LOGGER.error("Run %d failed: %s", run_id, payload)
+            event_queue.put((event_type, run_id, payload))
+
         try:
-            all_calls = []
+            # Determine if we should use streaming mode for large logs
+            total_size = sum(os.path.getsize(p) for p in log_paths if os.path.isfile(p))
+            use_streaming = total_size >= 1 * 1024 * 1024 * 1024  # >= 1 GiB
+            
+            if use_streaming:
+                emit("status", f"Log size {total_size / (1024**3):.1f} GiB detected - using streaming mode...")
+                self._run_analysis_streaming(
+                    log_paths, prod_configs, user_count, pdf_path, excluded_ips,
+                    exclude_system, run_id, event_queue, emit
+                )
+            else:
+                self._run_analysis_list_mode(
+                    log_paths, prod_configs, user_count, pdf_path, excluded_ips,
+                    exclude_system, run_id, event_queue, emit
+                )
+        except Exception as exc:
+            LOGGER.exception("Run %d terminated with an error", run_id)
+            emit("error", f"{type(exc).__name__}: {exc}")
 
-            for log_path in log_paths:
-                # Determine product from filename or use first product config
-                product = "jira"
-                for config in prod_configs:
-                    if config["product"] in log_path.lower():
-                        product = config["product"]
-                        break
-                else:
-                    product = prod_configs[0]["product"] if prod_configs else "jira"
+    def _run_analysis_list_mode(
+        self, log_paths, prod_configs, user_count, pdf_path, excluded_ips,
+        exclude_system, run_id, event_queue, emit,
+    ):
+        """Parse logs into a list (existing behavior for small files)."""
+        all_calls = []
+        total_logs = len(log_paths)
 
-                calls = parse_log_file(log_path, product, excluded_ips=excluded_ips)
-                calls = enrich_calls(calls)
-                all_calls.extend(calls)
-
-            if not all_calls:
-                self.after(0, lambda: self._on_error("No external API calls found in the selected log files.\n\nCheck that you selected the correct log file and product type."))
+        for index, log_path in enumerate(log_paths, start=1):
+            # Check for cancellation per log file
+            if self._cancel_event and self._cancel_event.is_set():
+                LOGGER.info("Run %d cancelled by user during list-mode parsing", run_id)
+                emit("cancelled", "Analysis cancelled by user")
                 return
 
-            # Use first product config for plan
-            plan = prod_configs[0]["edition"] if prod_configs else "standard"
+            product = "jira"
+            for config in prod_configs:
+                if config["product"] in log_path.lower():
+                    product = config["product"]
+                    break
+            else:
+                product = prod_configs[0]["product"] if prod_configs else "jira"
 
-            # Generate PDF
-            generate_pdf(all_calls, prod_configs[0]["product"], plan, pdf_path, user_count,
-                         excluded_ips=excluded_ips or [], exclude_system=exclude_system)
+            log_name = os.path.basename(log_path)
+            emit("status", f"Parsing log {index}/{total_logs}: {log_name}...")
 
-            # Update UI on main thread
-            self.after(0, lambda: self._on_success(pdf_path, len(all_calls)))
+            def report_progress(lines_scanned, api_calls):
+                # Check for cancellation during parsing
+                if self._cancel_event and self._cancel_event.is_set():
+                    return
+                emit(
+                    "status",
+                    f"Parsing log {index}/{total_logs}: {log_name} - "
+                    f"{lines_scanned:,} lines scanned, {api_calls:,} API calls found.",
+                )
 
-        except Exception as e:
-            self.after(0, lambda: self._on_error(str(e)))
+            calls = parse_log_file(
+                log_path,
+                product,
+                excluded_ips=excluded_ips,
+                progress_callback=report_progress,
+            )
+            calls = enrich_calls(calls)
+            all_calls.extend(calls)
+            emit(
+                "status",
+                f"Parsed log {index}/{total_logs}: {len(calls):,} external API calls "
+                f"({len(all_calls):,} total).",
+            )
+
+        if not all_calls:
+            emit(
+                "error",
+                "No external API calls were found in the selected log files.\n\n"
+                "Check the log format, product selection, and exclusion settings.",
+            )
+            return
+
+        plan = prod_configs[0]["edition"] if prod_configs else "standard"
+        report_product = prod_configs[0]["product"] if prod_configs else "jira"
+        emit("status", f"Generating final PDF from {len(all_calls):,} parsed API calls...")
+        self._generate_pdf_atomically(
+            all_calls, report_product, plan, pdf_path, user_count,
+            excluded_ips or [], exclude_system,
+        )
+        LOGGER.info(
+            "Run %d complete: all selected logs parsed; api_calls=%d, pdf=%s",
+            run_id, len(all_calls), pdf_path,
+        )
+        emit("success", (pdf_path, len(all_calls)))
+
+    def _run_analysis_streaming(
+        self, log_paths, prod_configs, user_count, pdf_path, excluded_ips,
+        exclude_system, run_id, event_queue, emit,
+    ):
+        """Parse logs using StreamingAggregator for memory-efficient processing."""
+        from analyzer.streaming import StreamingAggregator
+        from analyzer.parser import iter_parsed_calls
+        from analyzer.calculator import enrich_calls
+        from analyzer.pdf_exporter import generate_streaming_pdf
+        
+        # Create temp SQLite database next to the target PDF
+        output_dir = os.path.dirname(os.path.abspath(pdf_path))
+        db_path = os.path.join(output_dir, f".streaming-{run_id}.db")
+        
+        try:
+            with StreamingAggregator(db_path=db_path, excluded_ips=excluded_ips) as aggregator:
+                run_started_at = time.monotonic()
+                total_logs = len(log_paths)
+                total_calls = 0
+                
+                for index, log_path in enumerate(log_paths, start=1):
+                    # Check for cancellation per log file
+                    if self._cancel_event and self._cancel_event.is_set():
+                        LOGGER.info("Run %d cancelled by user during streaming mode", run_id)
+                        emit("cancelled", "Analysis cancelled by user")
+                        return
+
+                    product = "jira"
+                    for config in prod_configs:
+                        if config["product"] in log_path.lower():
+                            product = config["product"]
+                            break
+                    else:
+                        product = prod_configs[0]["product"] if prod_configs else "jira"
+                    
+                    log_name = os.path.basename(log_path)
+                    emit("status", f"Streaming log {index}/{total_logs}: {log_name}...")
+                    
+                    lines_scanned = 0
+                    
+                    total_bytes = os.path.getsize(log_path)
+
+                    def report_progress(total_lines, yielded_calls, bytes_scanned):
+                        nonlocal lines_scanned
+                        # Check for cancellation during progress reporting
+                        if self._cancel_event and self._cancel_event.is_set():
+                            return
+                        lines_scanned = total_lines
+                        elapsed_seconds = max(time.monotonic() - run_started_at, 0.001)
+                        bytes_per_second = bytes_scanned / elapsed_seconds
+                        remaining_seconds = max(total_bytes - bytes_scanned, 0) / max(bytes_per_second, 1)
+                        database_bytes = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+                        database_mib = database_bytes / (1024 * 1024)
+                        elapsed_text = time.strftime("%H:%M:%S", time.gmtime(elapsed_seconds))
+                        eta_text = time.strftime("%H:%M:%S", time.gmtime(remaining_seconds))
+                        emit(
+                            "status",
+                            f"Streaming {index}/{total_logs}: {total_lines:,} lines, "
+                            f"{total_calls + yielded_calls:,} API calls, {bytes_per_second / (1024 * 1024):,.1f} MiB/s, "
+                            f"{elapsed_text} elapsed, ~{eta_text} remaining, SQLite {database_mib:,.1f} MiB.",
+                        )
+                    
+                    # Stream parse calls without loading into a list
+                    ingested_this_log = 0
+                    for call in iter_parsed_calls(
+                        log_path,
+                        product,
+                        excluded_ips=excluded_ips,
+                        progress_callback=report_progress,
+                    ):
+                        # Check for cancellation per record
+                        if self._cancel_event and self._cancel_event.is_set():
+                            LOGGER.info("Run %d cancelled by user during record ingestion", run_id)
+                            emit("cancelled", "Analysis cancelled by user")
+                            return
+
+                        # Enrich and ingest into aggregator
+                        call = enrich_calls([call])[0]
+                        aggregator.ingest(call)
+                        ingested_this_log += 1
+                    
+                    total_calls += ingested_this_log
+                    emit(
+                        "status",
+                        f"Streamed log {index}/{total_logs}: {ingested_this_log:,} API calls "
+                        f"({total_calls:,} total aggregated).",
+                    )
+                
+                if total_calls == 0:
+                    emit(
+                        "error",
+                        "No external API calls were found in the selected log files.\n\n"
+                        "Check the log format, product selection, and exclusion settings.",
+                    )
+                    return
+                
+                plan = prod_configs[0]["edition"] if prod_configs else "standard"
+                report_product = prod_configs[0]["product"] if prod_configs else "jira"
+                
+                emit("status", f"Generating PDF from {total_calls:,} aggregated API calls (streaming mode)...")
+                self._generate_streaming_pdf_atomically(
+                    aggregator, report_product, plan, pdf_path, user_count,
+                    excluded_ips or [], exclude_system,
+                )
+                
+                LOGGER.info(
+                    "Run %d complete: all selected logs streamed; api_calls=%d, pdf=%s",
+                    run_id, total_calls, pdf_path,
+                )
+                emit("success", (pdf_path, total_calls))
+        finally:
+            # Clean up temp database on success
+            if os.path.exists(db_path):
+                try:
+                    os.unlink(db_path)
+                except Exception as e:
+                    LOGGER.warning("Failed to clean up temp database %s: %s", db_path, e)
+
+    @staticmethod
+    def _generate_pdf_atomically(
+        calls, product, plan, pdf_path, user_count, excluded_ips, exclude_system,
+    ):
+        """Replace the destination only after a complete PDF was generated."""
+        output_dir = os.path.dirname(os.path.abspath(pdf_path))
+        fd, temporary_pdf_path = tempfile.mkstemp(
+            prefix=".access-log-analyzer-", suffix=".pdf", dir=output_dir,
+        )
+        os.close(fd)
+        LOGGER.info("Building PDF in temporary file: %s", temporary_pdf_path)
+        try:
+            generate_pdf(
+                calls, product, plan, temporary_pdf_path, user_count,
+                excluded_ips=excluded_ips, exclude_system=exclude_system,
+            )
+            os.replace(temporary_pdf_path, pdf_path)
+            LOGGER.info("Complete PDF atomically saved to: %s", pdf_path)
+        except Exception:
+            if os.path.exists(temporary_pdf_path):
+                os.unlink(temporary_pdf_path)
+            raise
+
+    @staticmethod
+    def _generate_streaming_pdf_atomically(
+        aggregator, product, plan, pdf_path, user_count, excluded_ips, exclude_system,
+    ):
+        """Generate streaming PDF and atomically replace the destination."""
+        from analyzer.pdf_exporter import generate_streaming_pdf
+        
+        output_dir = os.path.dirname(os.path.abspath(pdf_path))
+        fd, temporary_pdf_path = tempfile.mkstemp(
+            prefix=".access-log-analyzer-", suffix=".pdf", dir=output_dir,
+        )
+        os.close(fd)
+        LOGGER.info("Building streaming PDF in temporary file: %s", temporary_pdf_path)
+        try:
+            generate_streaming_pdf(
+                aggregator, product, plan, temporary_pdf_path, user_count,
+                excluded_ips=excluded_ips, exclude_system=exclude_system,
+            )
+            os.replace(temporary_pdf_path, pdf_path)
+            LOGGER.info("Complete streaming PDF atomically saved to: %s", pdf_path)
+        except Exception:
+            if os.path.exists(temporary_pdf_path):
+                os.unlink(temporary_pdf_path)
+            raise
+
+    def _poll_analysis_events(self):
+        """Apply worker events safely from the Tkinter main thread."""
+        try:
+            while True:
+                event_type, run_id, payload = self._analysis_events.get_nowait()
+                if run_id != self._analysis_run_id:
+                    continue
+                if event_type == "status":
+                    self._status_label.configure(text=cast(str, payload), fg=TEXT_MID)
+                elif event_type == "success":
+                    pdf_path, call_count = cast(tuple[str, int], payload)
+                    self._on_success(pdf_path, call_count)
+                elif event_type == "cancelled":
+                    self._on_cancelled()
+                elif event_type == "error":
+                    self._on_error(cast(str, payload))
+        except queue.Empty:
+            pass
+        finally:
+            self.after(100, self._poll_analysis_events)
 
     def _on_success(self, pdf_path: str, call_count: int):
-        self._run_btn.configure(state="normal", text="▶   RUN ANALYSIS")
+        self._progress_bar.stop()
+        self._run_btn.configure(state="normal", text="▶   RUN ANALYSIS", bg=BLUE, fg="white", cursor="hand2")
+        self._cancel_btn.configure(state="disabled", bg=BG, fg="#A5ADBA")
         self._status_label.configure(
-            text=f"✅  Analysis complete — {call_count:,} API calls analyzed. PDF saved to: {pdf_path}",
-            fg=GREEN
+            text=(
+                f"✅  Analysis complete — all selected logs were parsed; "
+                f"{call_count:,} API calls analyzed. PDF saved to: {pdf_path}"
+            ),
+            fg=GREEN,
         )
-        self._render_pdf(pdf_path)
+        self._latest_pdf_path = pdf_path
+        self._report_card.pack(fill="x", pady=(5, 10))
+        self._open_pdf_btn.configure(state="normal")
+        self._open_pdf_btn.pack(anchor="w")
+
+    def _on_cancelled(self):
+        """Handle cancelled analysis - clean up PDF and reset UI."""
+        self._progress_bar.stop()
+        self._run_btn.configure(state="normal", text="▶   RUN ANALYSIS", bg=BLUE, fg="white", cursor="hand2")
+        self._cancel_btn.configure(state="disabled", bg=BG, fg="#A5ADBA")
+        self._status_label.configure(text="⏸  Analysis cancelled by user", fg=YELLOW)
+        
+        # Clean up the PDF file if it exists
+        pdf_path = self.pdf_output_path.get()
+        if pdf_path and pdf_path != "No output path selected" and os.path.exists(pdf_path):
+            try:
+                os.unlink(pdf_path)
+                LOGGER.info("Cleaned up PDF after cancellation: %s", pdf_path)
+            except Exception as e:
+                LOGGER.warning("Failed to clean up PDF after cancellation: %s", e)
+        
+        # Hide the Open PDF button
+        self._latest_pdf_path = None
+        self._open_pdf_btn.configure(state="disabled")
+        self._open_pdf_btn.pack_forget()
+        self._report_card.pack_forget()
 
     def _on_error(self, message: str):
-        self._run_btn.configure(state="normal", text="▶   RUN ANALYSIS")
+        self._progress_bar.stop()
+        self._run_btn.configure(state="normal", text="▶   RUN ANALYSIS", bg=BLUE, fg="white", cursor="hand2")
+        self._cancel_btn.configure(state="disabled", bg=BG, fg="#A5ADBA")
         self._status_label.configure(text=f"❌  Error: {message}", fg=RED)
         messagebox.showerror("Analysis Error", message)
 
-    # ── PDF Preview ───────────────────────────────────────────────────────────
-
-    def _render_pdf(self, pdf_path: str):
-        """Render all pages of the PDF into the canvas."""
-        try:
-            self._placeholder.place_forget()
-            self._canvas.delete("all")
-            self._pdf_images.clear()
-
-            canvas_width = self._canvas.winfo_width() or 860
-
-            # Convert PDF pages to images using pdf2image + poppler
-            pages = convert_from_path(pdf_path, dpi=150, poppler_path='/opt/homebrew/bin')
-            y_offset = 10
-
-            for img in pages:
-                # Scale to fit canvas width
-                scale = (canvas_width - 20) / img.width
-                new_w = int(img.width * scale)
-                new_h = int(img.height * scale)
-                img = img.resize((new_w, new_h), Image.LANCZOS)
-
-                img_tk = ImageTk.PhotoImage(img)
-                self._pdf_images.append(img_tk)
-
-                # Page shadow
-                self._canvas.create_rectangle(
-                    14, y_offset + 4, 14 + new_w, y_offset + 4 + new_h,
-                    fill="#BBBBBB", outline=""
-                )
-                # Page image
-                self._canvas.create_image(12, y_offset, anchor="nw", image=img_tk)
-
-                y_offset += new_h + 16
-
-            self._canvas.configure(scrollregion=(0, 0, canvas_width, y_offset))
-
-        except Exception as e:
-            err = str(e).lower()
-            is_poppler = any(k in err for k in ("poppler", "pdftoppm", "pdfinfo", "no such file", "not found", "filenotfounderror"))
-            if is_poppler:
-                msg = f"⚠️  PDF preview unavailable — your report was saved successfully. Open it from: {pdf_path}"
-            else:
-                msg = f"⚠️  PDF preview error: {e}"
-            self._status_label.configure(text=msg, fg=YELLOW)
+    def _open_completed_pdf(self):
+        """Open the fully generated report without rendering it in Tkinter."""
+        if not self._latest_pdf_path:
+            return
+        pdf_path = Path(self._latest_pdf_path)
+        if not pdf_path.is_file():
+            messagebox.showerror("Report Not Found", f"The completed PDF no longer exists:\n{pdf_path}")
+            return
+        LOGGER.info("Opening completed PDF in the system viewer: %s", pdf_path)
+        webbrowser.open(pdf_path.resolve().as_uri())
 
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
 
+def configure_terminal_logging():
+    """Configure concise, timestamped diagnostics for GUI runs."""
+    level_name = os.environ.get("ACCESS_LOG_ANALYZER_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)-8s [%(threadName)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+
 def main():
+    configure_terminal_logging()
+    LOGGER.info("Starting Access Log Analyzer GUI")
     app = AccessLogAnalyzerApp()
     app.mainloop()
 

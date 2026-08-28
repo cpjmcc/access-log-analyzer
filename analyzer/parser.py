@@ -13,6 +13,7 @@ Confluence DC access log format (default):
 import re
 from datetime import datetime
 from dataclasses import dataclass, field
+from collections.abc import Callable, Iterator
 from typing import Optional
 
 # Regex for Standard Combined Log Format (used by sample/simple DC configs):
@@ -45,6 +46,33 @@ LOG_PATTERN_JIRA_DC = re.compile(
     r'(?:\s+"[^"]*")?'                                           # optional session id
 )
 
+# Regex for Confluence DC logs behind a proxy:
+#   clientIP, proxyIP user [timestamp] "METHOD path HTTP/x" "ua" status bytes duration
+LOG_PATTERN_CONFLUENCE_PROXY = re.compile(
+    r'(?P<ip>\S+?)(?:,\s*\S+)*\s+'
+    r'(?P<user>\S+)\s+'
+    r'\[(?P<timestamp>[^\]]+)\]\s+'
+    r'"(?P<method>\S+)\s+(?P<path>\S+)\s+\S+"\s+'
+    r'"(?P<user_agent>[^"]*)"\s+'
+    r'(?P<status>\d{3})\s+'
+    r'(?P<bytes>\S+)'
+    r'(?:\s+(?P<duration>\d+))?'
+)
+
+# Regex for custom DC format:
+#   IP user [timestamp] "METHOD path HTTP/x" "referer" "ua" status bytes duration
+LOG_PATTERN_CUSTOM = re.compile(
+    r'(?P<ip>\S+)\s+'
+    r'(?P<user>\S+)\s+'
+    r'\[(?P<timestamp>[^\]]+)\]\s+'
+    r'"(?P<method>\S+)\s+(?P<path>\S+)\s+\S+"\s+'
+    r'"(?P<referer>[^"]*)"\s+'
+    r'"(?P<user_agent>[^"]*)"\s+'
+    r'(?P<status>\d{3})\s+'
+    r'(?P<bytes>\S+)'
+    r'(?:\s+(?P<duration>\d+))?'
+)
+
 # Timestamp format used in DC logs
 TIMESTAMP_FORMAT = "%d/%b/%Y:%H:%M:%S %z"
 
@@ -54,6 +82,8 @@ INTERNAL_USER_AGENTS = [
     "JiraInternal",
     "ConfluenceInternal",
     "com.atlassian",
+    "Confluence-",
+    "JIRA-",
 ]
 
 # Paths that are NOT external API calls (internal/UI traffic)
@@ -115,8 +145,12 @@ def is_external_api_call(path: str, user_agent: str, product: str) -> bool:
 
 def parse_log_line(line: str, product: str) -> Optional[APICall]:
     """Parse a single log line and return an APICall if it's a relevant external API call."""
-    # Try Jira DC extended format first (more specific), then standard
+    # Try the most specific DC formats before falling back to standard logs.
     match = LOG_PATTERN_JIRA_DC.match(line.strip())
+    if not match:
+        match = LOG_PATTERN_CONFLUENCE_PROXY.match(line.strip())
+    if not match:
+        match = LOG_PATTERN_CUSTOM.match(line.strip())
     if not match:
         match = LOG_PATTERN_STANDARD.match(line.strip())
     if not match:
@@ -158,7 +192,100 @@ def parse_log_line(line: str, product: str) -> Optional[APICall]:
     )
 
 
-def parse_log_file(filepath: str, product: str, excluded_ips: list[str] = None) -> list[APICall]:
+# Bound the memory used to scan malformed input. Access-log records should be
+# much smaller than 1 MiB; records beyond this limit are skipped safely.
+READ_CHUNK_BYTES = 64 * 1024
+MAX_LOG_LINE_BYTES = 1 * 1024 * 1024
+
+
+def iter_log_lines(filepath: str) -> Iterator[Optional[str]]:
+    """Yield decoded log records while keeping memory bounded for malformed files.
+
+    ``None`` represents a skipped record that exceeded ``MAX_LOG_LINE_BYTES``.
+    The reader works from fixed-size byte chunks rather than relying on the text
+    iterator, which can allocate an unbounded string when a log is missing a
+    newline or contains a corrupted oversized record.
+    """
+    pending = b""
+    discarding_oversized_record = False
+
+    with open(filepath, "rb") as log_file:
+        while chunk := log_file.read(READ_CHUNK_BYTES):
+            if discarding_oversized_record:
+                newline_index = chunk.find(b"\n")
+                if newline_index == -1:
+                    continue
+                chunk = chunk[newline_index + 1:]
+                discarding_oversized_record = False
+
+            data = pending + chunk
+            complete_records = data.split(b"\n")
+            pending = complete_records.pop()
+
+            for raw_record in complete_records:
+                if len(raw_record) > MAX_LOG_LINE_BYTES:
+                    yield None
+                    continue
+                yield raw_record.decode("utf-8", errors="replace")
+
+            if len(pending) > MAX_LOG_LINE_BYTES:
+                # Do not retain or repeatedly append an oversized partial line.
+                yield None
+                pending = b""
+                discarding_oversized_record = True
+
+    if pending and not discarding_oversized_record:
+        if len(pending) > MAX_LOG_LINE_BYTES:
+            yield None
+        else:
+            yield pending.decode("utf-8", errors="replace")
+
+
+def iter_parsed_calls(
+    filepath: str,
+    product: str,
+    excluded_ips: Optional[list[str]] = None,
+    progress_callback: Optional[Callable[[int, int, int], None]] = None,
+) -> Iterator[APICall]:
+    """
+    Stream-parse a log file, yielding APICall objects without loading all into memory.
+    
+    Args:
+        filepath: Path to the log file
+        product: 'jira' or 'confluence'
+        excluded_ips: List of IP addresses to exclude (e.g. the server's own IP)
+        progress_callback: Optional callback(total_lines, api_calls_yielded) for progress
+    
+    Yields:
+        APICall objects one at a time
+    """
+    excluded_set = set(ip.strip() for ip in (excluded_ips or []) if ip.strip())
+    total = 0
+    yielded = 0
+    bytes_scanned = 0
+    
+    try:
+        for line in iter_log_lines(filepath):
+            total += 1
+            if line is not None:
+                bytes_scanned += len(line.encode("utf-8", errors="replace")) + 1
+                call = parse_log_line(line, product)
+                if call and call.ip not in excluded_set:
+                    yield call
+                    yielded += 1
+            
+            if progress_callback and total % 100_000 == 0:
+                progress_callback(total, yielded, bytes_scanned)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Log file not found: {filepath}")
+
+
+def parse_log_file(
+    filepath: str,
+    product: str,
+    excluded_ips: Optional[list[str]] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> list[APICall]:
     """Parse an entire log file and return all external API calls.
     
     Args:
@@ -168,14 +295,18 @@ def parse_log_file(filepath: str, product: str, excluded_ips: list[str] = None) 
     """
     calls = []
     skipped = 0
+    oversized = 0
     excluded = 0
     total = 0
     excluded_set = set(ip.strip() for ip in (excluded_ips or []) if ip.strip())
 
     try:
-        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                total += 1
+        for line in iter_log_lines(filepath):
+            total += 1
+            if line is None:
+                oversized += 1
+                skipped += 1
+            else:
                 call = parse_log_line(line, product)
                 if call:
                     if call.ip in excluded_set:
@@ -184,11 +315,16 @@ def parse_log_file(filepath: str, product: str, excluded_ips: list[str] = None) 
                         calls.append(call)
                 else:
                     skipped += 1
+
+            if progress_callback and total % 100_000 == 0:
+                progress_callback(total, len(calls))
     except FileNotFoundError:
         raise FileNotFoundError(f"Log file not found: {filepath}")
 
     msg = f"  Parsed {total} log lines → {len(calls)} external API calls ({skipped} skipped)"
-    if excluded > 0:
+    if oversized:
+        msg += f", {oversized} oversized records skipped"
+    if excluded:
         msg += f", {excluded} excluded (system IPs)"
     print(msg)
     return calls
